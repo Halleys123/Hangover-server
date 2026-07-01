@@ -30,7 +30,9 @@ router.use(authenticate);
 
 router.get('/', async (req, res, next) => {
   try {
-    const sheets = await Datasheet.find({ userId: req.user!._id }).sort({ uploadedAt: -1 });
+    const sheets = await Datasheet.find({ userId: req.user!._id }).sort({
+      uploadedAt: -1,
+    });
     res.json(sheets);
   } catch (err) {
     next(err);
@@ -39,7 +41,10 @@ router.get('/', async (req, res, next) => {
 
 router.get('/:id', async (req, res, next) => {
   try {
-    const sheet = await Datasheet.findOne({ _id: req.params.id, userId: req.user!._id });
+    const sheet = await Datasheet.findOne({
+      _id: req.params.id,
+      userId: req.user!._id,
+    });
     if (!sheet) return res.status(404).json({ error: 'Datasheet not found' });
     res.json(sheet);
   } catch (err) {
@@ -63,7 +68,10 @@ router.post('/', upload.single('file'), async (req, res, next) => {
     // Background Cognee indexing — does not block the response
     indexDatasheet(sheet.filePath, sheet.name)
       .then(async (cogneeConfig) => {
-        await Datasheet.findByIdAndUpdate(sheet._id, { parsed: true, cogneeConfig });
+        await Datasheet.findByIdAndUpdate(sheet._id, {
+          parsed: true,
+          cogneeConfig,
+        });
       })
       .catch(() => {
         // Cognee not configured — sheet remains parsed: false
@@ -83,12 +91,35 @@ router.put('/:id/link/:componentId', async (req, res, next) => {
       Component.findOne({ _id: req.params.componentId, userId: req.user!._id }),
     ]);
     if (!sheet) return res.status(404).json({ error: 'Datasheet not found' });
-    if (!component) return res.status(404).json({ error: 'Component not found' });
+    if (!component)
+      return res.status(404).json({ error: 'Component not found' });
 
     component.datasheetId = sheet._id as any;
     await component.save();
 
-    res.json({ linked: true, componentId: component._id, datasheetId: sheet._id });
+    res.json({
+      linked: true,
+      componentId: component._id,
+      datasheetId: sheet._id,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.get('/:id/file', async (req, res, next) => {
+  try {
+    const sheet = await Datasheet.findOne({
+      _id: req.params.id,
+      userId: req.user!._id,
+    });
+    if (!sheet) return res.status(404).json({ error: 'Datasheet not found' });
+    if (!sheet.filePath || !fs.existsSync(sheet.filePath)) {
+      return res.status(404).json({ error: 'File not found on disk' });
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${sheet.name}"`);
+    fs.createReadStream(sheet.filePath).pipe(res);
   } catch (err) {
     next(err);
   }
@@ -96,14 +127,18 @@ router.put('/:id/link/:componentId', async (req, res, next) => {
 
 router.delete('/:id', async (req, res, next) => {
   try {
-    const sheet = await Datasheet.findOneAndDelete({ _id: req.params.id, userId: req.user!._id });
+    const sheet = await Datasheet.findOneAndDelete({
+      _id: req.params.id,
+      userId: req.user!._id,
+    });
     if (!sheet) return res.status(404).json({ error: 'Datasheet not found' });
 
-    if (sheet.filePath && fs.existsSync(sheet.filePath)) fs.unlinkSync(sheet.filePath);
+    if (sheet.filePath && fs.existsSync(sheet.filePath))
+      fs.unlinkSync(sheet.filePath);
 
     await Component.updateMany(
       { userId: req.user!._id, datasheetId: sheet._id },
-      { $set: { datasheetId: null } }
+      { $set: { datasheetId: null } },
     );
 
     res.status(204).send();
