@@ -1,0 +1,26 @@
+import express from 'express';
+import cors from 'cors';
+import { errorHandler } from './middleware/errorHandler.js';
+import projectsRouter from './routes/projects.js';
+import componentsRouter from './routes/components.js';
+import datasheetsRouter from './routes/datasheets.js';
+import chatRouter from './routes/chat.js';
+import validateRouter from './routes/validate.js';
+
+const app = express();
+const PORT = process.env.PORT ?? 3000;
+
+app.use(cors({ origin: 'http://localhost:5173', credentials: true }));
+app.use(express.json());
+
+app.use('/api/projects', projectsRouter);
+app.use('/api/components', componentsRouter);
+app.use('/api/datasheets', datasheetsRouter);
+app.use('/api/chat', chatRouter);
+app.use('/api/validate', validateRouter);
+
+app.use(errorHandler);
+
+app.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});
