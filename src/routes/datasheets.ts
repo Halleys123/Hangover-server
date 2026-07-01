@@ -6,7 +6,7 @@ import fs from 'fs';
 import { authenticate } from '../middleware/authenticate.js';
 import { Datasheet } from '../models/Datasheet.js';
 import { Component } from '../models/Component.js';
-import { indexDatasheet } from '../services/cognee.js';
+import { pdfQueue } from '../services/pdfQueue.js';
 
 const UPLOAD_DIR = path.resolve('uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -62,20 +62,12 @@ router.post('/', upload.single('file'), async (req, res, next) => {
       size: formatBytes(req.file.size),
       filePath: req.file.path,
       parsed: false,
+      status: 'waiting',
       cogneeConfig: null,
     });
 
-    // Background Cognee indexing — does not block the response
-    indexDatasheet(sheet.filePath, sheet.name)
-      .then(async (cogneeConfig) => {
-        await Datasheet.findByIdAndUpdate(sheet._id, {
-          parsed: true,
-          cogneeConfig,
-        });
-      })
-      .catch(() => {
-        // Cognee not configured — sheet remains parsed: false
-      });
+    // Enqueue into asynchronous background processing queue
+    pdfQueue.enqueue(sheet._id.toString(), sheet.filePath, sheet.name);
 
     res.status(201).json(sheet);
   } catch (err) {
@@ -120,6 +112,43 @@ router.get('/:id/file', async (req, res, next) => {
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${sheet.name}"`);
     fs.createReadStream(sheet.filePath).pipe(res);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.patch('/:id/review', async (req, res, next) => {
+  try {
+    const { action, feedback, updatedSpecs } = req.body;
+    const sheet = await Datasheet.findOne({
+      _id: req.params.id,
+      userId: req.user!._id,
+    });
+    if (!sheet) return res.status(404).json({ error: 'Datasheet not found' });
+
+    if (action === 'accept') {
+      sheet.verificationStatus = 'accepted';
+      if (updatedSpecs) sheet.cogneeConfig = updatedSpecs;
+    } else if (action === 'improve') {
+      // If user provides feedback or updated specs
+      if (feedback) sheet.userNotes = feedback;
+      if (updatedSpecs) {
+        sheet.cogneeConfig = updatedSpecs;
+        sheet.verificationStatus = 'accepted';
+      } else {
+        // Trigger re-processing or mark unverified with notes
+        sheet.verificationStatus = 'unverified';
+      }
+    } else if (action === 'forget') {
+      sheet.cogneeConfig = null;
+      sheet.verificationStatus = 'rejected';
+      sheet.parsed = false;
+    } else {
+      return res.status(400).json({ error: 'Invalid action' });
+    }
+
+    await sheet.save();
+    res.json(sheet);
   } catch (err) {
     next(err);
   }

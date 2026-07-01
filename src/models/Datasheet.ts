@@ -6,6 +6,10 @@ export interface IDatasheet extends Document {
   size: string;
   filePath: string;
   parsed: boolean;
+  status: 'waiting' | 'processing' | 'completed' | 'failed';
+  error?: string;
+  verificationStatus: 'unverified' | 'accepted' | 'rejected';
+  userNotes?: string;
   cogneeConfig: Record<string, unknown> | null;
   uploadedAt: Date;
 }
@@ -22,6 +26,18 @@ const DatasheetSchema = new Schema<IDatasheet>(
     size: { type: String, required: true },
     filePath: { type: String, default: '' },
     parsed: { type: Boolean, default: false },
+    status: {
+      type: String,
+      enum: ['waiting', 'processing', 'completed', 'failed'],
+      default: 'waiting',
+    },
+    error: { type: String, default: null },
+    verificationStatus: {
+      type: String,
+      enum: ['unverified', 'accepted', 'rejected'],
+      default: 'unverified',
+    },
+    userNotes: { type: String, default: '' },
     cogneeConfig: { type: Schema.Types.Mixed, default: null },
     uploadedAt: { type: Date, default: Date.now },
   },
