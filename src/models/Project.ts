@@ -28,6 +28,7 @@ export interface IProject extends Document {
   status: 'in-progress' | 'completed';
   date: string;
   components: string[];
+  datasheets: Types.ObjectId[];
   canvas: {
     nodes: Array<{
       id: string;
@@ -62,6 +63,7 @@ const ProjectSchema = new Schema<IProject>(
     },
     date: { type: String, required: true },
     components: { type: [String], default: [] },
+    datasheets: [{ type: Schema.Types.ObjectId, ref: 'Datasheet' }],
     canvas: {
       nodes: { type: [NodeSchema], default: [] },
       edges: { type: [EdgeSchema], default: [] },

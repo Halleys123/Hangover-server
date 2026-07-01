@@ -21,7 +21,7 @@ router.get('/:id', async (req, res, next) => {
     const project = await Project.findOne({
       _id: req.params.id,
       userId: req.user!._id,
-    });
+    }).populate('datasheets');
     if (!project) return res.status(404).json({ error: 'Project not found' });
     res.json(project);
   } catch (err) {
@@ -41,6 +41,7 @@ router.post('/', async (req, res, next) => {
       status,
       date: new Date().toISOString().split('T')[0],
       components: [],
+      datasheets: [],
       canvas: { nodes: [], edges: [] },
     });
     res.status(201).json(project);
@@ -92,6 +93,36 @@ router.put('/:id/canvas', async (req, res, next) => {
     );
     if (!project) return res.status(404).json({ error: 'Project not found' });
     res.json({ saved: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.post('/:id/datasheets', async (req, res, next) => {
+  const { datasheetId } = req.body;
+  if (!datasheetId) return res.status(400).json({ error: 'datasheetId is required' });
+  try {
+    const project = await Project.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user!._id },
+      { $addToSet: { datasheets: datasheetId } },
+      { new: true }
+    ).populate('datasheets');
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    res.json(project);
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/:id/datasheets/:datasheetId', async (req, res, next) => {
+  try {
+    const project = await Project.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user!._id },
+      { $pull: { datasheets: req.params.datasheetId } as any },
+      { new: true }
+    ).populate('datasheets');
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    res.json(project);
   } catch (err) {
     next(err);
   }
