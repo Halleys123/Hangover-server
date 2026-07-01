@@ -10,7 +10,11 @@ declare global {
   }
 }
 
-export async function authenticate(req: Request, res: Response, next: NextFunction): Promise<void> {
+export async function authenticate(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+): Promise<void> {
   const header = req.headers.authorization;
   if (!header?.startsWith('Bearer ')) {
     res.status(401).json({ error: 'Unauthorized' });
@@ -19,7 +23,9 @@ export async function authenticate(req: Request, res: Response, next: NextFuncti
 
   const token = header.slice(7);
   try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET!) as { userId: string };
+    const payload = jwt.verify(token, process.env.JWT_SECRET!) as {
+      userId: string;
+    };
     const user = await User.findById(payload.userId).select('-password');
     if (!user) {
       res.status(401).json({ error: 'User not found' });

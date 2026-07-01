@@ -12,7 +12,7 @@
  */
 export async function indexDatasheet(
   _filePath: string,
-  _name: string
+  _name: string,
 ): Promise<Record<string, unknown>> {
   throw new Error('COGNEE_NOT_CONFIGURED');
 }

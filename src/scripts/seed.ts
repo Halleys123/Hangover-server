@@ -6,9 +6,14 @@ import { Project } from '../models/Project.js';
 import { Component } from '../models/Component.js';
 import { Datasheet } from '../models/Datasheet.js';
 
-const MONGO_URI = process.env.MONGODB_URI ?? 'mongodb://localhost:27017/hangover';
+const MONGO_URI =
+  process.env.MONGODB_URI ?? 'mongodb://localhost:27017/hangover';
 
-const DEMO = { email: 'demo@hangover.dev', name: 'Demo User', password: 'demo1234' };
+const DEMO = {
+  email: 'demo@hangover.dev',
+  name: 'Demo User',
+  password: 'demo1234',
+};
 
 async function seed() {
   await mongoose.connect(MONGO_URI);
@@ -181,11 +186,27 @@ async function seed() {
       status: 'in-progress',
       canvas: {
         nodes: [
-          { id: 'node-esp32', type: 'hardware', position: { x: 120, y: 160 }, data: { label: comp1.name, diagram: comp1.diagram } },
-          { id: 'node-dht22', type: 'hardware', position: { x: 480, y: 160 }, data: { label: comp3.name, diagram: comp3.diagram } },
+          {
+            id: 'node-esp32',
+            type: 'hardware',
+            position: { x: 120, y: 160 },
+            data: { label: comp1.name, diagram: comp1.diagram },
+          },
+          {
+            id: 'node-dht22',
+            type: 'hardware',
+            position: { x: 480, y: 160 },
+            data: { label: comp3.name, diagram: comp3.diagram },
+          },
         ],
         edges: [
-          { id: 'e1', source: 'node-esp32', target: 'node-dht22', sourceHandle: 'd34', targetHandle: 'data' },
+          {
+            id: 'e1',
+            source: 'node-esp32',
+            target: 'node-dht22',
+            sourceHandle: 'd34',
+            targetHandle: 'data',
+          },
         ],
       },
     },

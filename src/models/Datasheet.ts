@@ -12,15 +12,20 @@ export interface IDatasheet extends Document {
 
 const DatasheetSchema = new Schema<IDatasheet>(
   {
-    userId: { type: Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    userId: {
+      type: Schema.Types.ObjectId,
+      ref: 'User',
+      required: true,
+      index: true,
+    },
     name: { type: String, required: true },
     size: { type: String, required: true },
     filePath: { type: String, default: '' },
     parsed: { type: Boolean, default: false },
     cogneeConfig: { type: Schema.Types.Mixed, default: null },
-    uploadedAt: { type: Date, default: Date.now }
+    uploadedAt: { type: Date, default: Date.now },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 export const Datasheet = model<IDatasheet>('Datasheet', DatasheetSchema);

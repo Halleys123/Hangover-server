@@ -69,10 +69,25 @@ router.put('/:id/canvas', async (req, res, next) => {
   if (!Array.isArray(nodes) || !Array.isArray(edges)) {
     return res.status(400).json({ error: 'nodes and edges must be arrays' });
   }
+
+  // Extract unique component labels from the placed nodes on the canvas
+  const componentsList = Array.from(
+    new Set(
+      nodes
+        .filter((n: any) => n && n.data && typeof n.data.label === 'string')
+        .map((n: any) => n.data.label)
+    )
+  );
+
   try {
     const project = await Project.findOneAndUpdate(
       { _id: req.params.id, userId: req.user!._id },
-      { $set: { canvas: { nodes, edges } } },
+      { 
+        $set: { 
+          canvas: { nodes, edges },
+          components: componentsList
+        } 
+      },
       { new: true },
     );
     if (!project) return res.status(404).json({ error: 'Project not found' });

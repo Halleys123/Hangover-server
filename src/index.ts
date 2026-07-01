@@ -12,9 +12,15 @@ import validateRouter from './routes/validate.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
-const MONGO_URI = process.env.MONGODB_URI ?? 'mongodb://localhost:27017/hangover';
+const MONGO_URI =
+  process.env.MONGODB_URI ?? 'mongodb://localhost:27017/hangover';
 
-app.use(cors({ origin: process.env.CLIENT_ORIGIN ?? 'http://localhost:5173', credentials: true }));
+app.use(
+  cors({
+    origin: process.env.CLIENT_ORIGIN ?? 'http://localhost:5173',
+    credentials: true,
+  }),
+);
 app.use(express.json());
 
 app.use('/api/auth', authRouter);
@@ -30,7 +36,9 @@ mongoose
   .connect(MONGO_URI)
   .then(() => {
     console.log('Connected to MongoDB');
-    app.listen(PORT, () => console.log(`Server running on http://localhost:${PORT}`));
+    app.listen(PORT, () =>
+      console.log(`Server running on http://localhost:${PORT}`),
+    );
   })
   .catch((err) => {
     console.error('MongoDB connection failed:', err.message);
