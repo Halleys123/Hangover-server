@@ -15,7 +15,7 @@ router.get('/catalog', (req, res) => {
       (c) =>
         c.name.toLowerCase().includes(q) ||
         c.description.toLowerCase().includes(q) ||
-        c.category.toLowerCase().includes(q)
+        c.category.toLowerCase().includes(q),
     );
   }
   res.json(result);
@@ -40,7 +40,10 @@ router.get('/', async (req, res, next) => {
 
 router.get('/:id', async (req, res, next) => {
   try {
-    const item = await Component.findOne({ _id: req.params.id, userId: req.user!._id }).populate('datasheetId');
+    const item = await Component.findOne({
+      _id: req.params.id,
+      userId: req.user!._id,
+    }).populate('datasheetId');
     if (!item) return res.status(404).json({ error: 'Component not found' });
     res.json(item);
   } catch (err) {
@@ -50,7 +53,8 @@ router.get('/:id', async (req, res, next) => {
 
 router.post('/', async (req, res, next) => {
   const { category, name, description = '', diagram, datasheetId } = req.body;
-  if (!category || !name) return res.status(400).json({ error: 'category and name are required' });
+  if (!category || !name)
+    return res.status(400).json({ error: 'category and name are required' });
 
   try {
     const item = await Component.create({
@@ -60,7 +64,7 @@ router.post('/', async (req, res, next) => {
       description,
       diagram: diagram ?? { theme: 'blue', pins: { left: [], right: [] } },
       datasheetId: datasheetId ?? null,
-      cogneeConfig: null
+      cogneeConfig: null,
     });
     res.status(201).json(item);
   } catch (err) {
@@ -70,49 +74,16 @@ router.post('/', async (req, res, next) => {
 
 router.delete('/:id', async (req, res, next) => {
   try {
-    const result = await Component.deleteOne({ _id: req.params.id, userId: req.user!._id });
-    if (result.deletedCount === 0) return res.status(404).json({ error: 'Component not found' });
+    const result = await Component.deleteOne({
+      _id: req.params.id,
+      userId: req.user!._id,
+    });
+    if (result.deletedCount === 0)
+      return res.status(404).json({ error: 'Component not found' });
     res.status(204).send();
   } catch (err) {
     next(err);
   }
-});
-
-export default router;
-
-const router = Router();
-
-router.get('/', (req, res) => {
-  const { category, search } = req.query as Record<string, string>;
-
-  let result = components;
-
-  if (category) {
-    result = result.filter((c) => c.category === category);
-  }
-
-  if (search) {
-    const q = search.toLowerCase();
-    result = result.filter(
-      (c) =>
-        c.name.toLowerCase().includes(q) ||
-        c.description.toLowerCase().includes(q) ||
-        c.category.toLowerCase().includes(q),
-    );
-  }
-
-  res.json(result);
-});
-
-router.get('/categories', (_req, res) => {
-  const cats = [...new Set(components.map((c) => c.category))];
-  res.json(cats);
-});
-
-router.get('/:id', (req, res) => {
-  const component = components.find((c) => c.id === req.params.id);
-  if (!component) return res.status(404).json({ error: 'Component not found' });
-  res.json(component);
 });
 
 export default router;
