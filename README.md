@@ -4,37 +4,6 @@ The backend API for **Hardware Prototyping Copilot**, built with Express, TypeSc
 
 ---
 
-## Features
-
-- **Authentication**: Secure registration, login, JWT-based authentication middleware, and demo account access.
-- **Project & Canvas Editor**: Complete CRUD operations for workspace projects, SvelteFlow canvas nodes/edges state persistence, and auto-extraction of unique component labels.
-- **Component Library**: Manage a pre-populated catalog of microcontrollers and sensors, plus user-specific personal component libraries.
-- **Datasheet Management**: File upload integration using `multer` for parsing and importing hardware schematics and specifications.
-- **Database Seeding**: Built-in script to pre-populate standard components and sample projects.
-
----
-
-## Directory Structure
-
-```
-server/
-├── src/
-│   ├── data/        # Static catalog data and seed helpers
-│   ├── middleware/  # JWT validation and error handlers
-│   ├── models/      # Mongoose schemas (User, Project, Component, Datasheet)
-│   ├── routes/      # Express API routers (auth, projects, components, datasheets)
-│   ├── scripts/     # Database seeding scripts (seed.ts)
-│   ├── services/    # Cognee and vector parsing integrations
-│   ├── types/       # TypeScript type declarations
-│   └── index.ts     # Main application bootstrap
-├── dist/            # Compiled JavaScript output
-├── example.env      # Example template for environmental variables
-├── tsconfig.json    # TypeScript compiler configuration
-└── package.json     # Node script commands and dependencies
-```
-
----
-
 ## Getting Started
 
 ### Prerequisites
