@@ -8,13 +8,12 @@
  * - Store structured knowledge nodes (component → pin → voltage, protocol)
  * - Build edges representing electrical compatibility relationships
  *
- * @param filePath  Absolute path to the uploaded PDF on disk
- * @param name      Human-readable datasheet filename
+ * @returns Extracted configuration to be stored in Datasheet.cogneeConfig
  */
 export async function indexDatasheet(
   _filePath: string,
-  _name: string,
-): Promise<void> {
+  _name: string
+): Promise<Record<string, unknown>> {
   throw new Error('COGNEE_NOT_CONFIGURED');
 }
 
