@@ -9,6 +9,7 @@ import componentsRouter from './routes/components.js';
 import datasheetsRouter from './routes/datasheets.js';
 import chatRouter from './routes/chat.js';
 import validateRouter from './routes/validate.js';
+import aiRouter from './routes/ai.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -25,6 +26,7 @@ app.use(express.json());
 
 app.use('/api/auth', authRouter);
 app.use('/api/projects', projectsRouter);
+app.use('/api/projects', aiRouter);
 app.use('/api/components', componentsRouter);
 app.use('/api/datasheets', datasheetsRouter);
 app.use('/api/chat', chatRouter);

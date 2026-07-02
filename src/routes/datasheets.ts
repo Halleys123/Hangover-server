@@ -7,6 +7,7 @@ import { authenticate } from '../middleware/authenticate.js';
 import { Datasheet } from '../models/Datasheet.js';
 import { Component } from '../models/Component.js';
 import { pdfQueue } from '../services/pdfQueue.js';
+import { refineDatasheetSpecs } from '../services/cognee.js';
 
 const UPLOAD_DIR = path.resolve('uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -52,24 +53,35 @@ router.get('/:id', async (req, res, next) => {
   }
 });
 
-router.post('/', upload.single('file'), async (req, res, next) => {
-  if (!req.file) return res.status(400).json({ error: 'PDF file is required' });
+router.post('/', upload.any(), async (req, res, next) => {
+  const files = (Array.isArray(req.files) ? req.files : []) as Express.Multer.File[];
+  if (req.file) files.push(req.file);
+
+  if (files.length === 0) return res.status(400).json({ error: 'PDF file(s) required' });
 
   try {
-    const sheet = await Datasheet.create({
-      userId: req.user!._id,
-      name: req.file.originalname,
-      size: formatBytes(req.file.size),
-      filePath: req.file.path,
-      parsed: false,
-      status: 'waiting',
-      cogneeConfig: null,
-    });
+    const createdSheets = [];
+    for (const file of files) {
+      const sheet = await Datasheet.create({
+        userId: req.user!._id,
+        name: file.originalname,
+        size: formatBytes(file.size),
+        filePath: file.path,
+        parsed: false,
+        status: 'waiting',
+        cogneeConfig: null,
+      });
 
-    // Enqueue into asynchronous background processing queue
-    pdfQueue.enqueue(sheet._id.toString(), sheet.filePath, sheet.name);
+      // Enqueue into asynchronous background processing queue
+      pdfQueue.enqueue(sheet._id.toString(), sheet.filePath, sheet.name);
+      createdSheets.push(sheet);
+    }
 
-    res.status(201).json(sheet);
+    if (createdSheets.length === 1 && !req.body.multi) {
+      res.status(201).json(createdSheets[0]);
+    } else {
+      res.status(201).json(createdSheets);
+    }
   } catch (err) {
     next(err);
   }
@@ -117,9 +129,48 @@ router.get('/:id/file', async (req, res, next) => {
   }
 });
 
+router.post('/:id/refine', async (req, res, next) => {
+  try {
+    const { prompt } = req.body;
+    const sheet = await Datasheet.findOne({
+      _id: req.params.id,
+      userId: req.user!._id,
+    });
+    if (!sheet) return res.status(404).json({ error: 'Datasheet not found' });
+    if (!sheet.filePath || !fs.existsSync(sheet.filePath)) {
+      return res.status(404).json({ error: 'File not found on disk for refinement' });
+    }
+
+    const refinedSpecs = await refineDatasheetSpecs(
+      sheet.filePath,
+      sheet.name,
+      sheet.cogneeConfig,
+      prompt || '',
+      sheet._id.toString()
+    );
+
+    sheet.cogneeConfig = refinedSpecs;
+    sheet.verificationStatus = 'accepted';
+    if (prompt) sheet.userNotes = prompt;
+    await sheet.save();
+
+    const comp = await Component.findOne({ datasheetId: sheet._id });
+    if (comp) {
+      comp.cogneeConfig = refinedSpecs;
+      const nomVolt = (refinedSpecs["Electrical Limits"] as any)?.nominalVoltage;
+      comp.description = `${refinedSpecs["Component Classification"] || (nomVolt ? `${nomVolt}V Nominal` : 'AI Extracted')} • AI Refined Specs`;
+      await comp.save();
+    }
+
+    res.json(sheet);
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.patch('/:id/review', async (req, res, next) => {
   try {
-    const { action, feedback, updatedSpecs } = req.body;
+    const { action, feedback, updatedSpecs, useAi } = req.body;
     const sheet = await Datasheet.findOne({
       _id: req.params.id,
       userId: req.user!._id,
@@ -130,13 +181,21 @@ router.patch('/:id/review', async (req, res, next) => {
       sheet.verificationStatus = 'accepted';
       if (updatedSpecs) sheet.cogneeConfig = updatedSpecs;
     } else if (action === 'improve') {
-      // If user provides feedback or updated specs
       if (feedback) sheet.userNotes = feedback;
-      if (updatedSpecs) {
+      if (useAi && sheet.filePath && fs.existsSync(sheet.filePath)) {
+        const refinedSpecs = await refineDatasheetSpecs(
+          sheet.filePath,
+          sheet.name,
+          sheet.cogneeConfig,
+          feedback || '',
+          sheet._id.toString()
+        );
+        sheet.cogneeConfig = refinedSpecs;
+        sheet.verificationStatus = 'accepted';
+      } else if (updatedSpecs) {
         sheet.cogneeConfig = updatedSpecs;
         sheet.verificationStatus = 'accepted';
       } else {
-        // Trigger re-processing or mark unverified with notes
         sheet.verificationStatus = 'unverified';
       }
     } else if (action === 'forget') {
@@ -162,13 +221,17 @@ router.delete('/:id', async (req, res, next) => {
     });
     if (!sheet) return res.status(404).json({ error: 'Datasheet not found' });
 
-    if (sheet.filePath && fs.existsSync(sheet.filePath))
-      fs.unlinkSync(sheet.filePath);
+    if (sheet.filePath) {
+      const absPath = path.resolve(sheet.filePath);
+      if (fs.existsSync(absPath)) {
+        try { fs.unlinkSync(absPath); } catch (err) { console.error('Failed to unlink abs path:', err); }
+      } else if (fs.existsSync(sheet.filePath)) {
+        try { fs.unlinkSync(sheet.filePath); } catch (err) { console.error('Failed to unlink raw path:', err); }
+      }
+    }
 
-    await Component.updateMany(
-      { userId: req.user!._id, datasheetId: sheet._id },
-      { $set: { datasheetId: null } },
-    );
+    // Remove any components auto-created for or linked exclusively to this datasheet
+    await Component.deleteMany({ userId: req.user!._id, datasheetId: sheet._id });
 
     res.status(204).send();
   } catch (err) {
