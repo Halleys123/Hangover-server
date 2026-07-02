@@ -44,6 +44,11 @@ export interface IProject extends Document {
       targetHandle?: string;
     }>;
   };
+  chatHistory?: Array<{
+    role: 'user' | 'assistant';
+    text: string;
+    timestamp: Date;
+  }>;
 }
 
 const ProjectSchema = new Schema<IProject>(
@@ -67,6 +72,16 @@ const ProjectSchema = new Schema<IProject>(
     canvas: {
       nodes: { type: [NodeSchema], default: [] },
       edges: { type: [EdgeSchema], default: [] },
+    },
+    chatHistory: {
+      type: [
+        {
+          role: { type: String, enum: ['user', 'assistant'], required: true },
+          text: { type: String, required: true },
+          timestamp: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
     },
   },
   { timestamps: true },
