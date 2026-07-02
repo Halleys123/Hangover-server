@@ -1,5 +1,7 @@
 import { Datasheet } from '../models/Datasheet.js';
+import { Component } from '../models/Component.js';
 import { indexDatasheet } from './cognee.js';
+import { derivePins } from '../utils/derivePins.js';
 
 interface QueueJob {
   datasheetId: string;
@@ -33,33 +35,36 @@ class PDFQueueService {
         status: 'processing',
       });
 
-      // Simulate realistic processing time so queue progression is observable
-      await new Promise((resolve) => setTimeout(resolve, 3500));
+      console.log(`[PDFQueue] Starting real text extraction & LLM analysis for ${job.originalName}...`);
+      const cogneeConfig = await indexDatasheet(job.filePath, job.originalName, job.datasheetId);
+      console.log(`[PDFQueue] Successfully extracted specs via Ollama/Cognee for ${job.originalName}:`, cogneeConfig);
 
-      let cogneeConfig = null;
-      try {
-        cogneeConfig = await indexDatasheet(job.filePath, job.originalName);
-      } catch (err) {
-        // Cognee service not running/configured
-      }
-
-      // If Cognee didn't return extracted specs, supply a simulated dummy extraction
-      // so user can observe working specs immediately during prototyping
-      if (!cogneeConfig) {
-        cogneeConfig = {
-          "Operating Voltage": "3.3V - 5.0V DC",
-          "Max Current Draw": "45mA",
-          "Logic Interface": "I2C / SPI / GPIO",
-          "Pin Configuration": "VCC (Pin 1), GND (Pin 2), SDA/TX (Pin 3), SCL/RX (Pin 4)",
-          "Thermal Limit": "-40°C to +85°C"
-        };
-      }
-
-      await Datasheet.findByIdAndUpdate(job.datasheetId, {
+      const sheet = await Datasheet.findByIdAndUpdate(job.datasheetId, {
         status: 'completed',
         parsed: true,
         cogneeConfig,
-      });
+      }, { returnDocument: 'after' });
+
+      if (sheet) {
+        const existingComp = await Component.findOne({ datasheetId: sheet._id });
+        if (!existingComp) {
+          const cleanName = job.originalName.replace(/\.pdf$/i, '').replace(/_Datasheet|_Spec|_Specifications/i, '').trim();
+          const isSensor = job.originalName.toLowerCase().includes('dht') || job.originalName.toLowerCase().includes('sensor') || job.originalName.toLowerCase().includes('mpu');
+          
+          // Derive accurate deterministic visual schematic pins (eliminating random SIG/DATA leads on 2-wire coolers/fans)
+          const derivedDiagram = derivePins(cleanName, cogneeConfig);
+
+          await Component.create({
+            userId: sheet.userId,
+            datasheetId: sheet._id,
+            category: isSensor ? 'sensor' : 'microcontroller',
+            name: cleanName || 'AI Component',
+            description: `${cogneeConfig["Component Classification"] || ((cogneeConfig["Electrical Limits"] as any)?.nominalVoltage ? `${(cogneeConfig["Electrical Limits"] as any).nominalVoltage}V Nominal` : 'AI Extracted')} • AI Specs`,
+            diagram: derivedDiagram,
+            cogneeConfig
+          });
+        }
+      }
     } catch (err: any) {
       console.error(`Queue job failed for datasheet ${job.datasheetId}:`, err);
       await Datasheet.findByIdAndUpdate(job.datasheetId, {
