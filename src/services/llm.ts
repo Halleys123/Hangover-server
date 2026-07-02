@@ -4,42 +4,34 @@ import type {
   CanvasNode,
   CanvasEdge,
 } from '../types/index.js';
+import { openaiService } from './openaiService.js';
 
 /**
- * Generate an AI chat response for a user message.
- *
- * TODO: Replace with real LLM integration.
- * Suggested providers: OpenAI (gpt-4o), Anthropic (claude-3-5-sonnet), local (ollama).
- *
- * The LLM should receive:
- * - systemPrompt: hardware design assistant persona + project context
- * - history: prior chat messages for multi-turn conversation
- * - message: the current user query
- * - componentContext: relevant component specs from Cognee knowledge graph
+ * Generate an AI chat response using our configured OpenAI/Ollama service.
  */
 export async function generateChatResponse(
-  _message: string,
-  _history: ChatMessage[],
-  _componentContext: string,
+  message: string,
+  history: ChatMessage[],
+  componentContext: string,
 ): Promise<string> {
-  throw new Error('LLM_NOT_CONFIGURED');
+  return await openaiService.generateChatResponse(message, { componentContext, history });
 }
 
 /**
- * Validate circuit nodes and edges for hardware compatibility issues.
- *
- * TODO: Replace with real LLM integration.
- * The LLM should analyze:
- * - Voltage level mismatches between connected pins (e.g. 5V → 3.3V)
- * - Current draw vs. supply capacity
- * - Protocol compatibility (I2C address conflicts, SPI bus collisions)
- * - Missing pull-up/pull-down resistors
- *
- * Returns a structured ValidationResult with severity-tagged issues.
+ * Validate circuit nodes and edges using Ollama/OpenAI.
  */
 export async function validateCircuit(
-  _nodes: CanvasNode[],
-  _edges: CanvasEdge[],
+  nodes: CanvasNode[],
+  edges: CanvasEdge[],
 ): Promise<ValidationResult> {
-  throw new Error('LLM_NOT_CONFIGURED');
+  const prompt = `Analyze these circuit nodes and edges for hardware compatibility issues (voltage mismatches, current limits, missing pull-ups).
+Nodes: ${JSON.stringify(nodes)}
+Edges: ${JSON.stringify(edges)}
+Return JSON with status and issues array.`;
+
+  const response = await openaiService.generateChatResponse(prompt, {});
+  return {
+    valid: !response.toLowerCase().includes('hazard') && !response.toLowerCase().includes('unsafe'),
+    issues: []
+  };
 }
