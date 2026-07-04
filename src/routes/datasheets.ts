@@ -6,6 +6,7 @@ import fs from 'fs';
 import { authenticate } from '../middleware/authenticate.js';
 import { Datasheet } from '../models/Datasheet.js';
 import { Component } from '../models/Component.js';
+import { Project } from '../models/Project.js';
 import { pdfQueue } from '../services/pdfQueue.js';
 import { refineDatasheetSpecs } from '../services/cognee.js';
 
@@ -65,7 +66,6 @@ router.post('/', upload.any(), async (req, res, next) => {
     for (const file of files) {
       const sheet = await Datasheet.create({
         userId: req.user!._id,
-        projectId: projectId || null,
         name: file.originalname,
         size: formatBytes(file.size),
         filePath: file.path,
@@ -73,6 +73,13 @@ router.post('/', upload.any(), async (req, res, next) => {
         status: 'waiting',
         cogneeConfig: null,
       });
+
+      if (projectId) {
+        await Project.findOneAndUpdate(
+          { _id: projectId, userId: req.user!._id },
+          { $addToSet: { datasheets: sheet._id } }
+        );
+      }
 
       // Enqueue into asynchronous background processing queue
       pdfQueue.enqueue(sheet._id.toString(), sheet.filePath, sheet.name);

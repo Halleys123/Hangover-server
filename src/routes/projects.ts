@@ -1,7 +1,9 @@
 import { Router } from 'express';
+import { Types } from 'mongoose';
 import { authenticate } from '../middleware/authenticate.js';
 import { Project } from '../models/Project.js';
 import { Datasheet } from '../models/Datasheet.js';
+import { ChatSession } from '../models/ChatSession.js';
 import { addDatasheetToProjectDataset } from '../services/cognee.js';
 
 const router = Router();
@@ -167,26 +169,42 @@ router.post('/:id/datasheets', async (req, res, next) => {
 
     const project = await Project.findOneAndUpdate(
       { _id: req.params.id, userId: req.user!._id },
-      { 
-        $addToSet: { datasheets: datasheetId },
-        $set: {
-          chatHistory: [{
-            role: 'assistant',
-            text: `New datasheet attached to workspace. Started a clean chat session from zero specifically for this component. How would you like to integrate it into your circuit design?`,
-            timestamp: new Date()
-          }]
-        }
-      },
+      { $addToSet: { datasheets: datasheetId } },
       { new: true }
     ).populate('datasheets');
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     try {
       await addDatasheetToProjectDataset(datasheet, req.params.id);
-      await Datasheet.findOneAndUpdate(
-        { _id: datasheetId, userId: req.user!._id },
-        { $set: { projectId: req.params.id } }
-      );
+      
+      const greetingText = `New datasheet **${datasheet.name}** attached to workspace. How would you like to integrate it into your circuit design?`;
+      if (project.chatHistory && project.chatHistory.length > 0) {
+        const latestSession = project.chatHistory[project.chatHistory.length - 1];
+        latestSession.chats.push({
+          role: 'assistant',
+          text: greetingText,
+          timestamp: new Date()
+        });
+        await project.save();
+      } else {
+        project.chatHistory = [{
+          _id: new Types.ObjectId(),
+          title: 'Main Conversation',
+          chats: [
+            {
+              role: 'assistant',
+              text: 'Hello! I am your **AI Hardware Architect**. Tell me what project or circuit goal you want to build!',
+              timestamp: new Date()
+            },
+            {
+              role: 'assistant',
+              text: greetingText,
+              timestamp: new Date()
+            }
+          ]
+        }];
+        await project.save();
+      }
     } catch (e) {
       console.error('[Projects] Failed to sync datasheet link metadata:', e);
     }
@@ -207,12 +225,9 @@ router.delete('/:id/datasheets/:datasheetId', async (req, res, next) => {
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     try {
-      await Datasheet.findOneAndUpdate(
-        { _id: req.params.datasheetId, userId: req.user!._id },
-        { $set: { projectId: null } }
-      );
+      console.log(`[Projects] Detached datasheet ${req.params.datasheetId} from project ${req.params.id}`);
     } catch (e) {
-      console.error('[Projects] Failed to clear datasheet projectId:', e);
+      console.error('[Projects] Failed to clear datasheet association log:', e);
     }
 
     res.json(project);

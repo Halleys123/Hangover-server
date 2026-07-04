@@ -2,6 +2,7 @@ import { Router } from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import { Types } from 'mongoose';
 import { authenticate } from '../middleware/authenticate.js';
 import { Project } from '../models/Project.js';
 import { Component } from '../models/Component.js';
@@ -19,6 +20,10 @@ const upload = multer({
 
 const router = Router();
 router.use(authenticate);
+
+function sanitizeDatasetName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+}
 
 /**
  * 1. Ingest Route: /api/projects/:projectId/ingest
@@ -55,6 +60,10 @@ router.post('/:projectId/ingest', upload.single('file'), async (req, res, next) 
     const { componentName, text, specs } = req.body;
     const filePath = req.file?.path;
 
+    const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    const datasetName = sanitizeDatasetName(project.name);
+
     let parsedSpecs = specs;
     if (typeof specs === 'string') {
       try { parsedSpecs = JSON.parse(specs); } catch { }
@@ -62,7 +71,7 @@ router.post('/:projectId/ingest', upload.single('file'), async (req, res, next) 
 
     // Pass the parsed stream metadata and electrical specifications to Cognee dual-memory layer
     const graphNode = await cognee.remember({
-      dataset: projectId,
+      dataset: datasetName,
       filePath,
       componentName: componentName || req.file?.originalname?.replace(/\.pdf$/i, '') || 'Custom Component',
       text,
@@ -70,34 +79,49 @@ router.post('/:projectId/ingest', upload.single('file'), async (req, res, next) 
     });
 
     try {
-      await cognee.improve({ dataset: projectId });
+      await cognee.improve({ dataset: datasetName });
     } catch (e) {
       console.warn('[AI Ingest] Improve call failed (non-blocking):', e);
     }
 
-    const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
-    let session = null;
-    if (project) {
-      const title = `Ingested: ${componentName || req.file?.originalname?.replace(/\.pdf$/i, '') || 'Document'}`;
-      const greeting = `Datasheet **${componentName || req.file?.originalname || 'Document'}** ingested. Started a clean conversation session from zero specifically for this document. How would you like to proceed?`;
-      session = await ChatSession.create({
-        projectId,
-        userId: req.user!._id,
-        title,
-        messages: [{
-          role: 'assistant',
-          text: greeting,
-          timestamp: new Date()
-        }]
+    const greetingText = `Datasheet **${componentName || req.file?.originalname || 'Document'}** ingested. How would you like to proceed?`;
+    let session;
+    if (project.chatHistory && project.chatHistory.length > 0) {
+      session = project.chatHistory[project.chatHistory.length - 1];
+      session.chats.push({
+        role: 'assistant',
+        text: greetingText,
+        timestamp: new Date()
       });
+      await project.save();
+    } else {
+      const newSessionId = new Types.ObjectId();
+      project.chatHistory = [{
+        _id: newSessionId,
+        title: 'Main Conversation',
+        chats: [
+          {
+            role: 'assistant',
+            text: 'Hello! I am your **AI Hardware Architect**. Tell me what project or circuit goal you want to build!',
+            timestamp: new Date()
+          },
+          {
+            role: 'assistant',
+            text: greetingText,
+            timestamp: new Date()
+          }
+        ]
+      }];
+      await project.save();
+      session = project.chatHistory[0];
     }
 
     res.status(201).json({
       success: true,
       message: 'Datasheet successfully parsed, entity facts indexed into Graph DB, and semantic chunks stored in Vector DB.',
       node: graphNode,
-      chatHistory: session?.messages || [],
-      sessionId: session?._id || ''
+      chatHistory: session.chats,
+      sessionId: session._id.toString()
     });
   } catch (err) {
     next(err);
@@ -112,31 +136,23 @@ router.post('/:projectId/ingest', upload.single('file'), async (req, res, next) 
 router.get('/:projectId/chat/sessions', async (req, res, next) => {
   try {
     const { projectId } = req.params;
-    let sessions = await ChatSession.find({ projectId, userId: req.user!._id }).sort({ updatedAt: -1 });
-    
-    // Auto-migrate old chat history to first session if none exists
-    if (sessions.length === 0) {
-      const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
-      if (!project) return res.status(404).json({ error: 'Project not found' });
-      
-      const initialMessages = (project.chatHistory && project.chatHistory.length > 0)
-        ? project.chatHistory
-        : [{
-            role: 'assistant',
-            text: 'Hello! I am your **AI Hardware Architect**. Tell me what project or circuit goal you want to build!',
-            timestamp: new Date()
-          }];
+    const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
 
-      const defaultSession = await ChatSession.create({
-        projectId,
-        userId: req.user!._id,
+    if (!project.chatHistory || project.chatHistory.length === 0) {
+      project.chatHistory = [{
+        _id: new Types.ObjectId(),
         title: 'Main Conversation',
-        messages: initialMessages as any
-      });
-      sessions = [defaultSession];
+        chats: [{
+          role: 'assistant',
+          text: 'Hello! I am your **AI Hardware Architect**. Tell me what project or circuit goal you want to build!',
+          timestamp: new Date()
+        }]
+      }];
+      await project.save();
     }
 
-    res.json(sessions);
+    res.json(project.chatHistory);
   } catch (err) {
     next(err);
   }
@@ -145,9 +161,13 @@ router.get('/:projectId/chat/sessions', async (req, res, next) => {
 router.get('/:projectId/chat/sessions/:sessionId', async (req, res, next) => {
   try {
     const { projectId, sessionId } = req.params;
-    const session = await ChatSession.findOne({ _id: sessionId, projectId, userId: req.user!._id });
+    const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const session = project.chatHistory.find(s => s._id.toString() === sessionId);
     if (!session) return res.status(404).json({ error: 'Chat session not found' });
-    res.json(session.messages || []);
+
+    res.json(session.chats || []);
   } catch (err) {
     next(err);
   }
@@ -158,34 +178,34 @@ router.get('/:projectId/chat', async (req, res, next) => {
     const { projectId } = req.params;
     const { sessionId } = req.query;
 
+    const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    if (!project.chatHistory || project.chatHistory.length === 0) {
+      project.chatHistory = [{
+        _id: new Types.ObjectId(),
+        title: 'Main Conversation',
+        chats: [{
+          role: 'assistant',
+          text: 'Hello! I am your **AI Hardware Architect**. Tell me what project or circuit goal you want to build!',
+          timestamp: new Date()
+        }]
+      }];
+      await project.save();
+    }
+
     let session;
     if (sessionId) {
-      session = await ChatSession.findOne({ _id: sessionId as string, projectId, userId: req.user!._id });
+      session = project.chatHistory.find(s => s._id.toString() === sessionId);
     } else {
-      session = await ChatSession.findOne({ projectId, userId: req.user!._id }).sort({ updatedAt: -1 });
+      session = project.chatHistory[project.chatHistory.length - 1];
     }
 
     if (!session) {
-      const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
-      if (!project) return res.status(404).json({ error: 'Project not found' });
-      
-      const initialMessages = (project.chatHistory && project.chatHistory.length > 0)
-        ? project.chatHistory
-        : [{
-            role: 'assistant',
-            text: 'Hello! I am your **AI Hardware Architect**. Tell me what project or circuit goal you want to build!',
-            timestamp: new Date()
-          }];
-
-      session = await ChatSession.create({
-        projectId,
-        userId: req.user!._id,
-        title: 'Main Conversation',
-        messages: initialMessages as any
-      });
+      session = project.chatHistory[project.chatHistory.length - 1];
     }
 
-    res.json(session.messages || []);
+    res.json(session.chats || []);
   } catch (err) {
     next(err);
   }
@@ -199,45 +219,72 @@ router.post('/:projectId/chat/new', async (req, res, next) => {
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
     let summaryContext = project.description;
-    const lastSession = await ChatSession.findOne({ projectId, userId: req.user!._id }).sort({ updatedAt: -1 });
-    if (lastSession && lastSession.messages && lastSession.messages.length > 1) {
-      const recentTopics = lastSession.messages
-        .filter((m: any) => m.role === 'user')
-        .slice(-4)
-        .map((m: any) => m.text)
-        .join('; ');
-      if (recentTopics) {
-        summaryContext = `${project.description ? project.description + ' | ' : ''}Prior discussion: ${recentTopics}`;
-        project.description = summaryContext.slice(0, 350);
-        await project.save();
+    if (project.chatHistory && project.chatHistory.length > 0) {
+      const lastSession = project.chatHistory[project.chatHistory.length - 1];
+      if (lastSession.chats && lastSession.chats.length > 1) {
+        const recentTopics = lastSession.chats
+          .filter(m => m.role === 'user')
+          .slice(-4)
+          .map(m => m.text)
+          .join('; ');
+        if (recentTopics) {
+          summaryContext = `${project.description ? project.description + ' | ' : ''}Prior discussion: ${recentTopics}`;
+          project.description = summaryContext.slice(0, 350);
+        }
       }
     }
 
     const greeting = `Welcome to a new chat session for **${project.name}**! Based on your context (${summaryContext ? summaryContext : 'getting started'}), what specific circuit schematic or component integration would you like to work on next?`;
 
-    const session = await ChatSession.create({
-      projectId,
-      userId: req.user!._id,
-      title: title || `Thread ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
-      messages: [{
+    const newSessionId = new Types.ObjectId();
+    project.chatHistory.push({
+      _id: newSessionId,
+      title: title || 'New Chat',
+      chats: [{
         role: 'assistant',
         text: greeting,
         timestamp: new Date()
       }]
     });
+    
+    await project.save();
 
     res.json({
       success: true,
       greeting,
-      chatHistory: session.messages,
-      sessionId: session._id
+      chatHistory: project.chatHistory[project.chatHistory.length - 1].chats,
+      sessionId: newSessionId.toString()
     });
   } catch (err) {
     next(err);
   }
 });
 
+router.put('/:projectId/chat/sessions/:sessionId/rename', async (req, res, next) => {
+  try {
+    const { projectId, sessionId } = req.params;
+    const { title } = req.body;
+    if (!title) return res.status(400).json({ error: 'Title is required' });
+
+    const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    const session = project.chatHistory.find(s => s._id.toString() === sessionId);
+    if (!session) return res.status(404).json({ error: 'Chat session not found' });
+
+    session.title = title;
+    await project.save();
+
+    res.json({ success: true, title });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/:projectId/chat', async (req, res, next) => {
+  let isRequestClosed = false;
+  let sessionToUpdateId: string | null = null;
+
   try {
     const { projectId } = req.params;
     const query = req.body.query || req.body.message;
@@ -252,32 +299,69 @@ router.post('/:projectId/chat', async (req, res, next) => {
       return res.status(404).json({ error: 'Project not found' });
     }
 
-    let session;
-    if (sessionId) {
-      session = await ChatSession.findOne({ _id: sessionId as string, projectId, userId: req.user!._id });
-    } else {
-      session = await ChatSession.findOne({ projectId, userId: req.user!._id }).sort({ updatedAt: -1 });
-    }
-
-    if (!session) {
-      session = await ChatSession.create({
-        projectId,
-        userId: req.user!._id,
+    if (!project.chatHistory || project.chatHistory.length === 0) {
+      project.chatHistory = [{
+        _id: new Types.ObjectId(),
         title: 'Main Conversation',
-        messages: [{
+        chats: [{
           role: 'assistant',
           text: 'Hello! I am your **AI Hardware Architect**. Tell me what project or circuit goal you want to build!',
           timestamp: new Date()
         }]
-      });
+      }];
+      await project.save();
     }
 
+    let session;
+    if (sessionId) {
+      session = project.chatHistory.find(s => s._id.toString() === sessionId);
+    } else {
+      session = project.chatHistory[project.chatHistory.length - 1];
+    }
+
+    if (!session) {
+      session = project.chatHistory[project.chatHistory.length - 1];
+    }
+
+    sessionToUpdateId = session._id.toString();
+
+    // Auto-rename thread title based on user's first prompt if it has default welcome message
+    if (session.chats.length === 1 || session.title === 'New Chat' || session.title === 'Main Conversation') {
+      session.title = query.length > 30 ? `${query.substring(0, 27)}...` : query;
+    }
+
+    req.on('close', async () => {
+      isRequestClosed = true;
+      if (!res.headersSent && sessionToUpdateId) {
+        console.log('[AI] Client closed connection before response sent. Appending stopped state to db.');
+        try {
+          const latestProject = await Project.findOne({ _id: projectId, userId: req.user!._id });
+          if (latestProject) {
+            const activeSession = latestProject.chatHistory.find(s => s._id.toString() === sessionToUpdateId);
+            if (activeSession) {
+              const last = activeSession.chats[activeSession.chats.length - 1];
+              if (last && last.role === 'user') {
+                activeSession.chats.push({
+                  role: 'assistant',
+                  text: '*Generation stopped by user.*',
+                  timestamp: new Date()
+                });
+                await latestProject.save();
+              }
+            }
+          }
+        } catch (err) {
+          console.error('[AI] Error saving aborted state:', err);
+        }
+      }
+    });
+
     // Save user query to persistent chat history
-    const lastMsg = session.messages[session.messages.length - 1];
+    const lastMsg = session.chats[session.chats.length - 1];
     const isDuplicate = lastMsg && lastMsg.role === 'user' && lastMsg.text === query;
     if (!isDuplicate) {
-      session.messages.push({ role: 'user', text: query, timestamp: new Date() });
-      await session.save();
+      session.chats.push({ role: 'user', text: query, timestamp: new Date() });
+      await project.save();
     }
 
     // Step A: Context Retrieval from MongoDB Project Library & Cognee Graph
@@ -286,7 +370,7 @@ router.post('/:projectId/chat', async (req, res, next) => {
       const dbComps = await Component.find({ userId: req.user!._id });
       const matchedComps = dbComps.filter(c =>
         (project.components && project.components.some(pComp => c.name.toLowerCase() === pComp.toLowerCase() || pComp.toLowerCase().includes(c.name.toLowerCase()))) ||
-        (c.datasheetId && project.datasheets && project.datasheets.some(d => d.toString() === c.datasheetId?.toString()))
+        (project.datasheets && project.datasheets.some(d => d.toString() === c.datasheetId?.toString()))
       );
       const effectiveComps = matchedComps.length > 0 ? matchedComps : ((project.components && project.components.length > 0) ? dbComps : []);
 
@@ -310,15 +394,18 @@ router.post('/:projectId/chat', async (req, res, next) => {
     }
 
     try {
+      const datasetName = sanitizeDatasetName(project.name);
       const recalled = await cognee.recall({
-        dataset: projectId,
+        dataset: datasetName,
         query: query,
-        sessionId: projectId
+        sessionId: datasetName
       });
       if (Array.isArray(recalled)) compArray.push(...recalled);
     } catch (e) {
       console.error('[AI] Cognee recall error:', e);
     }
+
+    if (isRequestClosed) return;
 
     // Step B: Agentic State Machine & Circuit Generation via OpenAI
     const agenticResult = await openaiService.generateAgenticChatAndCircuit(
@@ -327,33 +414,58 @@ router.post('/:projectId/chat', async (req, res, next) => {
       compArray
     );
 
+    if (isRequestClosed) return;
+
     const aiReply = agenticResult.message || (agenticResult as any).reply || 'Processed request.';
 
-    // Reload session to avoid overwrite issues
-    const latestSession = await ChatSession.findOne({ _id: session._id, projectId, userId: req.user!._id });
-    if (!latestSession) return res.status(404).json({ error: 'Chat session not found' });
+    // Reload project to avoid overwrite issues
+    const latestProject = await Project.findOne({ _id: projectId, userId: req.user!._id });
+    if (!latestProject) return res.status(404).json({ error: 'Project not found' });
 
-    latestSession.messages.push({ role: 'assistant', text: aiReply, timestamp: new Date() });
-    await latestSession.save();
+    const activeSession = latestProject.chatHistory.find(s => s._id.toString() === sessionToUpdateId);
+    if (!activeSession) return res.status(404).json({ error: 'Chat session not found' });
+
+    activeSession.chats.push({ role: 'assistant', text: aiReply, timestamp: new Date() });
+    await latestProject.save();
 
     // Step C: Auto-Persist generated circuit into MongoDB if schematic was built
     if (agenticResult.type === 'circuit_generated' && agenticResult.nodes && agenticResult.edges) {
-      const latestProject = await Project.findOne({ _id: projectId, userId: req.user!._id });
-      if (latestProject) {
-        latestProject.canvas = {
+      const latestProjectForCanvas = await Project.findOne({ _id: projectId, userId: req.user!._id });
+      if (latestProjectForCanvas) {
+        latestProjectForCanvas.canvas = {
           nodes: agenticResult.nodes as any,
           edges: agenticResult.edges as any,
         };
-        await latestProject.save();
+        await latestProjectForCanvas.save();
       }
     }
 
-    // Step D: Return structured payload for React Flow / Svelte Flow rendering
     res.json(agenticResult);
-  } catch (err) {
+
+  } catch (err: any) {
+    console.error('[AI] Chat error:', err);
+    try {
+      if (sessionToUpdateId && !isRequestClosed) {
+        const latestProject = await Project.findOne({ _id: req.params.projectId, userId: req.user!._id });
+        if (latestProject) {
+          const activeSession = latestProject.chatHistory.find(s => s._id.toString() === sessionToUpdateId);
+          if (activeSession) {
+            activeSession.chats.push({
+              role: 'assistant',
+              text: `Error generating response: ${err.message || 'Unknown error'}`,
+              timestamp: new Date()
+            });
+            await latestProject.save();
+          }
+        }
+      }
+    } catch (e) {
+      console.error('[AI] Failed to save error message to session:', e);
+    }
     next(err);
   }
 });
+
 
 /**
  * 3. Validation Route: /api/projects/:projectId/validate-connection

@@ -1,4 +1,4 @@
-import { Schema, model, type Document, type Types } from 'mongoose';
+import { Schema, model, type Document, Types } from 'mongoose';
 
 const NodeSchema = new Schema(
   {
@@ -44,10 +44,14 @@ export interface IProject extends Document {
       targetHandle?: string;
     }>;
   };
-  chatHistory?: Array<{
-    role: 'user' | 'assistant';
-    text: string;
-    timestamp: Date;
+  chatHistory: Array<{
+    _id: Types.ObjectId;
+    title: string;
+    chats: Array<{
+      role: 'user' | 'assistant';
+      text: string;
+      timestamp: Date;
+    }>;
   }>;
 }
 
@@ -76,10 +80,16 @@ const ProjectSchema = new Schema<IProject>(
     chatHistory: {
       type: [
         {
-          role: { type: String, enum: ['user', 'assistant'], required: true },
-          text: { type: String, required: true },
-          timestamp: { type: Date, default: Date.now },
-        },
+          _id: { type: Schema.Types.ObjectId, default: () => new Types.ObjectId() },
+          title: { type: String, required: true },
+          chats: [
+            {
+              role: { type: String, enum: ['user', 'assistant'], required: true },
+              text: { type: String, required: true },
+              timestamp: { type: Date, default: Date.now },
+            }
+          ]
+        }
       ],
       default: [],
     },

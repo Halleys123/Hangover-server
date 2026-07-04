@@ -4,6 +4,7 @@ const require = createRequire(import.meta.url);
 const pdfParse = require('pdf-parse');
 import { cognee } from './cogneeClient.js';
 import { openaiService } from './openaiService.js';
+import { Project } from '../models/Project.js';
 
 /* 
  * Semantic Comment 1:
@@ -579,6 +580,8 @@ ${rawText.substring(0, 60000)}`;
  * into the project's dataset name, then running the improve call on Cognee Cloud.
  */
 export async function addDatasheetToProjectDataset(datasheet: any, projectId: string): Promise<void> {
+  const project = await Project.findById(projectId);
+  const datasetName = project ? sanitizeDatasetName(project.name) : projectId;
   const cleanName = datasheet.name.replace(/\.pdf$/i, '').trim() || 'Unknown Component';
   
   let rawText = '';
@@ -592,11 +595,11 @@ export async function addDatasheetToProjectDataset(datasheet: any, projectId: st
     }
   }
 
-  console.log(`[Cognee] Mapping datasheet "${cleanName}" to project dataset "${projectId}"...`);
+  console.log(`[Cognee] Mapping datasheet "${cleanName}" to project dataset "${datasetName}" (project: "${projectId}")...`);
 
   // 1. Remember the text content
   await cognee.remember({
-    dataset: projectId,
+    dataset: datasetName,
     filePath: datasheet.filePath,
     componentName: cleanName,
     text: rawText ? rawText.substring(0, 15000) : `Linked datasheet: ${datasheet.name}`,
@@ -605,7 +608,7 @@ export async function addDatasheetToProjectDataset(datasheet: any, projectId: st
   // 2. Remember the extracted specifications
   if (datasheet.cogneeConfig) {
     await cognee.remember({
-      dataset: projectId,
+      dataset: datasetName,
       componentName: cleanName,
       extractedSpecs: datasheet.cogneeConfig,
     });
@@ -613,8 +616,12 @@ export async function addDatasheetToProjectDataset(datasheet: any, projectId: st
 
   // 3. Trigger improve
   try {
-    await cognee.improve({ dataset: projectId });
+    await cognee.improve({ dataset: datasetName });
   } catch (err) {
     console.warn('[Cognee] Improve failed for project mapping:', err);
   }
+}
+
+function sanitizeDatasetName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9_]/g, '_');
 }
