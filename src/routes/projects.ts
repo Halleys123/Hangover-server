@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate.js';
 import { Project } from '../models/Project.js';
+import { Datasheet } from '../models/Datasheet.js';
+import { addDatasheetToProjectDataset } from '../services/cognee.js';
 
 const router = Router();
 router.use(authenticate);
@@ -158,6 +160,11 @@ router.post('/:id/datasheets', async (req, res, next) => {
   const { datasheetId } = req.body;
   if (!datasheetId) return res.status(400).json({ error: 'datasheetId is required' });
   try {
+    const datasheet = await Datasheet.findOne({ _id: datasheetId, userId: req.user!._id });
+    if (!datasheet) {
+      return res.status(404).json({ error: 'Datasheet not found' });
+    }
+
     const project = await Project.findOneAndUpdate(
       { _id: req.params.id, userId: req.user!._id },
       { 
@@ -173,6 +180,17 @@ router.post('/:id/datasheets', async (req, res, next) => {
       { new: true }
     ).populate('datasheets');
     if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    try {
+      await addDatasheetToProjectDataset(datasheet, req.params.id);
+      await Datasheet.findOneAndUpdate(
+        { _id: datasheetId, userId: req.user!._id },
+        { $set: { projectId: req.params.id } }
+      );
+    } catch (e) {
+      console.error('[Projects] Failed to sync datasheet link metadata:', e);
+    }
+
     res.json(project);
   } catch (err) {
     next(err);
@@ -187,6 +205,16 @@ router.delete('/:id/datasheets/:datasheetId', async (req, res, next) => {
       { new: true }
     ).populate('datasheets');
     if (!project) return res.status(404).json({ error: 'Project not found' });
+
+    try {
+      await Datasheet.findOneAndUpdate(
+        { _id: req.params.datasheetId, userId: req.user!._id },
+        { $set: { projectId: null } }
+      );
+    } catch (e) {
+      console.error('[Projects] Failed to clear datasheet projectId:', e);
+    }
+
     res.json(project);
   } catch (err) {
     next(err);

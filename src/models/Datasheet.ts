@@ -2,6 +2,7 @@ import { Schema, model, type Document, type Types } from 'mongoose';
 
 export interface IDatasheet extends Document {
   userId: Types.ObjectId;
+  projectId?: Types.ObjectId;
   name: string;
   size: string;
   filePath: string;
@@ -20,6 +21,12 @@ const DatasheetSchema = new Schema<IDatasheet>(
       type: Schema.Types.ObjectId,
       ref: 'User',
       required: true,
+      index: true,
+    },
+    projectId: {
+      type: Schema.Types.ObjectId,
+      ref: 'Project',
+      required: false,
       index: true,
     },
     name: { type: String, required: true },

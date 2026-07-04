@@ -60,10 +60,12 @@ router.post('/', upload.any(), async (req, res, next) => {
   if (files.length === 0) return res.status(400).json({ error: 'PDF file(s) required' });
 
   try {
+    const { projectId } = req.body;
     const createdSheets = [];
     for (const file of files) {
       const sheet = await Datasheet.create({
         userId: req.user!._id,
+        projectId: projectId || null,
         name: file.originalname,
         size: formatBytes(file.size),
         filePath: file.path,

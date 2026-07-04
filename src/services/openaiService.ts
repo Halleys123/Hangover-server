@@ -13,6 +13,7 @@ export class OpenAIService {
     return new OpenAI({
       apiKey,
       baseURL: process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || undefined,
+      timeout: 10 * 60 * 1000, // 10 minutes timeout for slow local LLM engines
     });
   }
 
@@ -50,7 +51,7 @@ export class OpenAIService {
       return response.choices[0]?.message?.content || 'No response generated.';
     } catch (err: any) {
       console.error('OpenAI API error during chat synthesis:', err);
-      return `[Fallback Synthesis] Retrieved Cognee Data:\n${contextString}\n\nError calling LLM: ${err.message}`;
+      throw err;
     }
   }
 

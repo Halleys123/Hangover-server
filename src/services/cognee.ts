@@ -431,7 +431,12 @@ ${rawText.substring(0, 60000)}`;
  */
 export async function queryComponentKnowledge(query: string, datasetId: string = 'default_dataset'): Promise<string> {
   const context = await cognee.recall({ dataset: datasetId, query });
-  return await openaiService.generateChatResponse(query, context);
+  try {
+    return await openaiService.generateChatResponse(query, context);
+  } catch (err: any) {
+    console.error('[Cognee] queryComponentKnowledge error:', err);
+    return `[Fallback Context] Knowledge graph retrieved context:\n${JSON.stringify(context, null, 2)}`;
+  }
 }
 
 /**
@@ -567,4 +572,49 @@ ${rawText.substring(0, 60000)}`;
   });
 
   return refined;
+}
+
+/**
+ * Link an already parsed datasheet to a project dataset by copying its metadata/text and specs
+ * into the project's dataset name, then running the improve call on Cognee Cloud.
+ */
+export async function addDatasheetToProjectDataset(datasheet: any, projectId: string): Promise<void> {
+  const cleanName = datasheet.name.replace(/\.pdf$/i, '').trim() || 'Unknown Component';
+  
+  let rawText = '';
+  if (datasheet.filePath && fs.existsSync(datasheet.filePath)) {
+    try {
+      const dataBuffer = fs.readFileSync(datasheet.filePath);
+      const pdfResult = await pdfParse(dataBuffer);
+      rawText = pdfResult.text || '';
+    } catch (e) {
+      console.warn('[Cognee] Failed to parse PDF for project mapping:', e);
+    }
+  }
+
+  console.log(`[Cognee] Mapping datasheet "${cleanName}" to project dataset "${projectId}"...`);
+
+  // 1. Remember the text content
+  await cognee.remember({
+    dataset: projectId,
+    filePath: datasheet.filePath,
+    componentName: cleanName,
+    text: rawText ? rawText.substring(0, 15000) : `Linked datasheet: ${datasheet.name}`,
+  });
+
+  // 2. Remember the extracted specifications
+  if (datasheet.cogneeConfig) {
+    await cognee.remember({
+      dataset: projectId,
+      componentName: cleanName,
+      extractedSpecs: datasheet.cogneeConfig,
+    });
+  }
+
+  // 3. Trigger improve
+  try {
+    await cognee.improve({ dataset: projectId });
+  } catch (err) {
+    console.warn('[Cognee] Improve failed for project mapping:', err);
+  }
 }

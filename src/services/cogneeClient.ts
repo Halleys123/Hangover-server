@@ -161,8 +161,9 @@ export class CogneeClient {
     query?: string;
     componentName?: string;
     pinNumber?: string | number;
+    sessionId?: string;
   }): Promise<any> {
-    const { dataset, query, componentName, pinNumber } = params;
+    const { dataset, query, componentName, pinNumber, sessionId } = params;
 
     // Ensure local store
     if (!memoryGraphStore.has(dataset)) {
@@ -173,18 +174,22 @@ export class CogneeClient {
     const apiUrl = this.getApiUrl();
     if (apiUrl && process.env.COGNEE_API_KEY && query) {
       try {
+        const datasetName = dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
         const searchRes = await fetch(`${apiUrl}/api/v1/search`, {
           method: 'POST',
           headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
           body: JSON.stringify({
             query,
             searchType: 'CHUNKS',
+            search_type: 'CHUNKS',
+            datasets: [datasetName],
+            session_id: sessionId,
           }),
         });
         if (searchRes.ok) {
           const results = await searchRes.json();
           if (Array.isArray(results) && results.length > 0) {
-            console.log(`[Cognee Cloud] Search returned ${results.length} chunks for "${query}"`);
+            console.log(`[Cognee Cloud] Search returned ${results.length} chunks for "${query}" (session: ${sessionId})`);
             return results;
           }
         }
@@ -229,6 +234,37 @@ export class CogneeClient {
     }
 
     return allComponents;
+  }
+
+  /**
+   * Improve: Triggers enrichment/graph construction on Cognee Cloud.
+   */
+  public async improve(params: { dataset: string }): Promise<any> {
+    const apiUrl = this.getApiUrl();
+    if (apiUrl && process.env.COGNEE_API_KEY) {
+      try {
+        const datasetName = params.dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
+        console.log(`[Cognee Cloud] Improving dataset: ${datasetName}...`);
+        const improveRes = await fetch(`${apiUrl}/api/v1/improve`, {
+          method: 'POST',
+          headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            dataset_name: datasetName,
+            run_in_background: true,
+          }),
+        });
+
+        if (improveRes.ok) {
+          const improveResult = await improveRes.json();
+          console.log(`[Cognee Cloud] Improve succeeded for ${datasetName}:`, improveResult);
+          return improveResult;
+        } else {
+          console.warn(`[Cognee Cloud] Improve failed (${improveRes.status}):`, await improveRes.text());
+        }
+      } catch (err) {
+        console.warn(`[Cognee Cloud] Improve call failed:`, err);
+      }
+    }
   }
 }
 
