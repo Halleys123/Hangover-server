@@ -1,24 +1,55 @@
 import OpenAI from 'openai';
 import { derivePins } from '../utils/derivePins.js';
+import { validateAndGetAIConfig } from './aiConfig.js';
+
+/**
+ * Strips optional markdown code fences (```json ... ``` or ``` ... ```) and
+ * parses the inner content as JSON. If the content is not valid JSON at all
+ * (e.g. local Ollama models responding with plain prose), wraps the raw text
+ * as a chat_response object so the UI still receives a displayable message.
+ */
+function safeParseJSON(raw: string, fallbackMessage?: string): any {
+  try {
+    const stripped = raw
+      .trim()
+      .replace(/^```(?:json)?\s*/i, '')
+      .replace(/\s*```[\s\S]*$/i, (m) => m.startsWith('```') ? '' : m)
+      .trim();
+    // Try to extract a JSON object/array if embedded in prose
+    const jsonMatch = stripped.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    return JSON.parse(stripped);
+  } catch {
+    // Model returned plain prose — wrap as a chat_response so the UI still works
+    return {
+      type: 'chat_response',
+      message: fallbackMessage || raw.trim() || 'No response generated.',
+      nodes: [],
+      edges: []
+    };
+  }
+}
 
 export class OpenAIService {
   private getClient(): OpenAI | null {
-    const apiKey = process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || 'dummy-key-for-local-providers';
+    const config = validateAndGetAIConfig(false);
 
-    // If no explicit API key is provided and no local base URL is set, return null
-    if (!process.env.OPENAI_API_KEY && !process.env.LLM_API_KEY && !process.env.OPENAI_BASE_URL && !process.env.LLM_BASE_URL) {
+    if (!config.isValid) {
       return null;
     }
 
     return new OpenAI({
-      apiKey,
-      baseURL: process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || undefined,
+      apiKey: config.apiKey || 'dummy-key-for-local-providers',
+      baseURL: config.baseURL || undefined,
       timeout: 10 * 60 * 1000, // 10 minutes timeout for slow local LLM engines
     });
   }
 
   private getModel(): string {
-    return process.env.LLM_MODEL || 'gpt-4o';
+    const config = validateAndGetAIConfig(false);
+    return config.model || 'gpt-4o';
   }
 
   /**
@@ -35,10 +66,11 @@ export class OpenAIService {
     try {
       const response = await openai.chat.completions.create({
         model: this.getModel(),
+        max_tokens: 1500,
         messages: [
           {
             role: 'system',
-            content: `You are an expert hardware prototyping AI assistant. You must answer engineering questions strictly using the factual component specifications provided in the Context below. Do not guess or hallucinate voltage rails, pinouts, or tolerances not present in the graph memory.`
+            content: `You are an expert hardware prototyping AI assistant for electronic circuits and microcontrollers. When factual component specifications or knowledge graph data are provided in the Context below, ground your engineering answers in those exact parameters. Help the user design, debug, and understand their prototyping projects clearly and accurately.`
           },
           {
             role: 'user',
@@ -51,6 +83,36 @@ export class OpenAIService {
       return response.choices[0]?.message?.content || 'No response generated.';
     } catch (err: any) {
       console.error('OpenAI API error during chat synthesis:', err);
+      throw err;
+    }
+  }
+
+  /**
+   * Dedicated JSON Extraction & Validation Route:
+   * Used by Cognee PDF datasheet ingestion, refinement, and circuit validation.
+   * Sends a clean system prompt without restricting the LLM to an empty or minimal context string,
+   * allowing models (like OpenRouter Claude 3.5 Sonnet, GPT-4o, Groq, or Llama 3) to reliably extract valid JSON.
+   */
+  public async generateJSONResponse(systemPrompt: string, userPrompt: string): Promise<string> {
+    const openai = this.getClient();
+    if (!openai) {
+      throw new Error('AI client not initialized or missing API key.');
+    }
+
+    try {
+      const response = await openai.chat.completions.create({
+        model: this.getModel(),
+        max_tokens: 1500,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.1
+      });
+
+      return response.choices[0]?.message?.content || '{}';
+    } catch (err: any) {
+      console.error('OpenAI API error during JSON extraction:', err);
       throw err;
     }
   }
@@ -78,6 +140,7 @@ export class OpenAIService {
     try {
       const response = await openai.chat.completions.create({
         model: this.getModel(),
+        max_tokens: 800,
         messages: [
           {
             role: 'system',
@@ -88,11 +151,10 @@ export class OpenAIService {
             content: `Deterministic Math Status: ${status}\nMath Evaluation Details: ${mathEvaluation}\nPin A (Output Source): ${JSON.stringify(pinA)}\nPin B (Input Destination): ${JSON.stringify(pinB)}`
           }
         ],
-        response_format: { type: 'json_object' },
         temperature: 0.1
       });
 
-      const parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
+      const parsed = safeParseJSON(response.choices[0]?.message?.content || '{}');
       return {
         status: parsed.status || status,
         reason: parsed.reason || fallbackReason
@@ -111,7 +173,8 @@ export class OpenAIService {
   public async generateAgenticChatAndCircuit(
     query: string,
     projectContext: any,
-    cogneeComponents: any[]
+    cogneeComponents: any[],
+    existingCanvas?: { nodes?: any[]; edges?: any[] }
   ): Promise<{
     type: 'chat_response' | 'circuit_generated';
     message: string;
@@ -179,27 +242,56 @@ export class OpenAIService {
     }
 
     try {
-      const systemPrompt = `You are an Agentic Hardware Architect AI for the Hardware Prototyping Copilot.
-Instead of asking the user to draw wires, YOU are the one who auto-assembles visual schematics for React Flow.
+      const hasComponents = cogneeComponents.length > 0;
+      // Build an explicit component list with actual pin IDs so the AI uses correct sourceHandle/targetHandle values
+      const componentList = cogneeComponents
+        .filter(c => typeof c.componentName === 'string')
+        .map((c, i) => {
+          const pinList = Array.isArray(c.pins) && c.pins.length > 0
+            ? c.pins.map((p: any) => `${p.pinNumber}("${p.pinName}")`).join(', ')
+            : 'pins: unknown';
+          return `${i + 1}. componentName: "${c.componentName}" | category: ${c.category || 'unknown'} | pins: [${pinList}]`;
+        })
+        .join('\n');
 
-You must follow this 4-Stage State Machine strictly:
-State 1 (Ideation): If the user declares a project goal (e.g. "I want to make a smart plant monitor"), identify required hardware blocks.
-State 2 (Datasheet Request): If required components are missing from the Cognee graph context, explicitly instruct the user to upload PDF datasheets for those parts.
-State 3 (Incompatibility & Bridging Request): Inspect the retrieved Cognee graph pin specifications. If you detect a voltage or protocol incompatibility (e.g. ESP32 3.3V output trying to drive a 12V pump or 5V relay without logic translation), DO NOT wire them directly. Instead, explain the electrical incompatibility hazard and ask the user to upload a datasheet for a bridging component (like an Optocoupler, Logic Level Converter, or MOSFET module).
-State 4 (Auto-Wiring Assembly): Once Cognee confirms that sufficient and electrically compatible components exist in the graph to fulfill the user's goal, generate the full visual circuit schematic!
+      // Build existing canvas context so AI knows current node positions
+      const existingNodes: any[] = existingCanvas?.nodes || [];
+      const existingEdges: any[] = existingCanvas?.edges || [];
+      const existingCanvasInfo = existingNodes.length > 0
+        ? `\nEXISTING CANVAS NODES (use these EXACT positions for these components — do not change them):\n${existingNodes.map((n: any) => `  - label: "${n?.data?.label}" | id: "${n?.id}" | position: {x:${n?.position?.x}, y:${n?.position?.y}}`).join('\n')}\nEXISTING EDGES (already wired — do not duplicate them):\n${existingEdges.map((e: any) => `  - id: "${e?.id}" source: ${e?.source}/${e?.sourceHandle} → target: ${e?.target}/${e?.targetHandle}`).join('\n') || '  (none yet)'}`
+        : '';
 
-When outputting State 4 (circuit generation), you MUST format React Flow nodes with 2D coordinates (x, y spaced cleanly at intervals like x: 100/450, y: 100/300) and edges connecting sourceHandle and targetHandle pin names.
+      const systemPrompt = `You are an Agentic Hardware Architect AI. Your ONLY output must be a single raw JSON object — no markdown, no prose, no explanations outside JSON.
 
-You MUST return strict JSON in exactly this format:
-{
-  "type": "chat_response" | "circuit_generated",
-  "message": "Your human-friendly response or schematic explanation",
-  "nodes": [ { "id": "node-1", "type": "componentNode", "position": { "x": 100, "y": 150 }, "data": { "label": "ESP32", "subtitle": "MCU", "pins": ["3.3V", "GND", "GPIO4"] } } ],
-  "edges": [ { "id": "edge-1", "source": "node-1", "sourceHandle": "3.3V", "target": "node-2", "targetHandle": "VCC", "label": "3.3V Power", "animated": true } ]
-}`;
+CRITICAL RULE: Your entire response must be a single valid JSON object. Never write plain text. Never use markdown fences. Start your response with { and end with }.
+
+JSON FORMAT (always use exactly this structure):
+{"type":"chat_response"|"circuit_generated","message":"string","nodes":[],"edges":[]}
+
+STATE MACHINE:
+State 1 - IDEATION: User describes a goal. Identify required hardware. Output type=chat_response asking for datasheets.
+State 2 - MISSING PARTS: Some components not in context. Output type=chat_response listing what datasheets are needed.
+State 3 - INCOMPATIBILITY: Voltage/protocol mismatch detected. Output type=chat_response explaining the hazard.
+State 4 - GENERATE CIRCUIT: ALL components are in context AND user asks to connect/wire/build. Output type=circuit_generated with full nodes and edges arrays.
+
+${hasComponents ? `AVAILABLE COMPONENTS (use these EXACT componentName values as node data.label values — do NOT invent new names):
+${componentList}
+${existingCanvasInfo}
+
+CRITICAL RULES FOR WIRING:
+1. Every node data.label MUST match a componentName from the list above exactly.
+2. Every edge sourceHandle and targetHandle MUST be one of the pin IDs listed above (the value before the parenthesis, e.g. use "D3" not "Pin 3").
+3. Preserve existing node positions exactly as given. Only add NEW edges that don't already exist.
+4. Output type=circuit_generated now since components are present and user wants wiring.` : ''}
+
+Node format: {"id":"node-1","type":"hardware","position":{"x":100,"y":150},"data":{"label":"<exact componentName>","subtitle":"<category>"}}
+Edge format: {"id":"edge-1","source":"node-1","sourceHandle":"<pin id from list>","target":"node-2","targetHandle":"<pin id from list>","label":"description","animated":true}
+
+Remember: respond ONLY with a JSON object. No text before or after the JSON.`;
 
       const response = await openai.chat.completions.create({
         model: this.getModel(),
+        max_tokens: 2000,
         messages: [
           { role: 'system', content: systemPrompt },
           {
@@ -207,161 +299,62 @@ You MUST return strict JSON in exactly this format:
             content: `Project Goal / User Message: "${query}"\n\nCurrent Project Metadata: ${JSON.stringify(projectContext)}\n\nIngested Cognee Graph Components: ${JSON.stringify(cogneeComponents, null, 2)}`
           }
         ],
-        response_format: { type: 'json_object' },
         temperature: 0.2
       });
 
-      let parsed: any = {};
-      try {
-        parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
-      } catch (err) {
-        console.warn('[AI] JSON parsing failed, attempting text healing.', err);
-        parsed = {
-          type: 'chat_response',
-          message: response.choices[0]?.message?.content || 'Processed request.'
-        };
-      }
+      const rawContent = response.choices[0]?.message?.content || '{}';
+      const parsed = safeParseJSON(rawContent, rawContent);
 
-      // Detect if user specifically requested wiring / schematic / connection
-      let finalType: 'chat_response' | 'circuit_generated' = parsed.type === 'circuit_generated' ? 'circuit_generated' : 'chat_response';
-      const isConnectQuery = /connect|wire|circuit|build|schematic|assemble/i.test(query) || 
-                            /auto-assemble|connect|schematic/i.test(parsed.message || '');
-      if (isConnectQuery && cogneeComponents.length >= 2) {
-        finalType = 'circuit_generated';
-      }
+      // Semantic Normalization: Ensure AI-generated React Flow nodes strictly use 'hardware' node type
+      // and physical pin layouts derived from the actual matched component specs.
+      // Matching is done by: exact name -> name inclusion -> description/category keyword fallback.
+      const normalizedNodes = Array.isArray(parsed.nodes) ? parsed.nodes.map((node: any, idx: number) => {
+        const aiLabel = (typeof node?.data?.label === 'string' && node.data.label) ? node.data.label : `Node ${idx + 1}`;
+        const aiLabelLower = aiLabel.toLowerCase();
 
-      // Build normalized nodes
-      let normalizedNodes = Array.isArray(parsed.nodes) && parsed.nodes.length > 0
-        ? parsed.nodes.map((node: any, idx: number) => {
-            const compName = node?.data?.label || `Node ${idx + 1}`;
-            const matchedComp = cogneeComponents.find(c =>
-              c.componentName.toLowerCase() === compName.toLowerCase() ||
-              compName.toLowerCase().includes(c.componentName.toLowerCase()) ||
-              c.componentName.toLowerCase().includes(compName.toLowerCase())
-            );
-            const specs = matchedComp ? (matchedComp.specs || matchedComp.cogneeConfig) : null;
-            const derived = derivePins(compName, specs);
-            return {
-              ...node,
-              id: node?.id || `node-${idx + 1}`,
-              type: 'hardware',
-              data: {
-                ...node?.data,
-                label: compName,
-                subtitle: node?.data?.subtitle || 'Hardware Component',
-                theme: derived.theme,
-                pins: derived.pins
-              }
-            };
-          })
-        : [];
-
-      // Fallback: If type is circuit_generated but nodes are empty, generate them from Cognee context
-      if (finalType === 'circuit_generated' && normalizedNodes.length === 0) {
-        normalizedNodes = cogneeComponents.map((c, i) => {
-          const specs = c.specs || c.cogneeConfig;
-          const derived = derivePins(c.componentName, specs);
-          return {
-            id: `node-${i + 1}`,
-            type: 'hardware',
-            position: { x: 150 + (i % 2) * 350, y: 100 + Math.floor(i / 2) * 220 },
-            data: {
-              label: c.componentName,
-              subtitle: c.description || 'Hardware Component',
-              theme: derived.theme,
-              pins: derived.pins
-            }
-          };
+        // 1. Try exact or substring match on componentName
+        let matchedComp = cogneeComponents.find(c => {
+          const name = typeof c.componentName === 'string' ? c.componentName.toLowerCase() : null;
+          if (!name) return false;
+          return name === aiLabelLower || aiLabelLower.includes(name) || name.includes(aiLabelLower);
         });
-      }
 
-      // Build edges
-      let edges = Array.isArray(parsed.edges) ? parsed.edges : [];
-
-      // Fallback: If type is circuit_generated but edges are empty, auto-wire power, ground, and signals
-      if (finalType === 'circuit_generated' && edges.length === 0 && normalizedNodes.length >= 2) {
-        const hostNode = normalizedNodes[0];
-        const hostPins = [
-          ...(hostNode.data.pins?.left || []),
-          ...(hostNode.data.pins?.right || [])
-        ];
-
-        for (let i = 1; i < normalizedNodes.length; i++) {
-          const peripheralNode = normalizedNodes[i];
-          const periPins = [
-            ...(peripheralNode.data.pins?.left || []),
-            ...(peripheralNode.data.pins?.right || [])
-          ];
-          
-          // Match Power Pins (VCC, 3.3V, 5V)
-          const hostPowerPin = hostPins.find((p: any) => 
-            /3\.3v|5v|vcc|vdd|power/i.test(p.label || p.id || '')
-          );
-          const periPowerPin = periPins.find((p: any) => 
-            /vcc|vdd|power|3\.3v|5v|v\+/i.test(p.label || p.id || '')
-          );
-          
-          if (hostPowerPin && periPowerPin) {
-            edges.push({
-              id: `edge-power-${i}`,
-              source: hostNode.id,
-              sourceHandle: hostPowerPin.id,
-              target: peripheralNode.id,
-              targetHandle: periPowerPin.id,
-              label: `${hostPowerPin.label} -> ${periPowerPin.label}`,
-              animated: true,
-              style: { stroke: '#10b981', strokeWidth: 2 }
-            });
-          }
-
-          // Match Ground Pins (GND, Ground)
-          const hostGndPin = hostPins.find((p: any) => 
-            /gnd|ground/i.test(p.label || p.id || '')
-          );
-          const periGndPin = periPins.find((p: any) => 
-            /gnd|ground/i.test(p.label || p.id || '')
-          );
-          
-          if (hostGndPin && periGndPin) {
-            edges.push({
-              id: `edge-gnd-${i}`,
-              source: hostNode.id,
-              sourceHandle: hostGndPin.id,
-              target: peripheralNode.id,
-              targetHandle: periGndPin.id,
-              label: 'Ground',
-              style: { stroke: '#64748b', strokeWidth: 2 }
-            });
-          }
-
-          // Match Signal Pins (DATA, GPIO, I/O, SIG)
-          const hostIoPin = hostPins.find((p: any) => 
-            /data|gpio|io|sig|d5|d13|analog|digital/i.test(p.label || p.id || '')
-          );
-          const periIoPin = periPins.find((p: any) => 
-            /data|gpio|io|sig|in|out/i.test(p.label || p.id || '')
-          );
-          
-          if (hostIoPin && periIoPin) {
-            edges.push({
-              id: `edge-signal-${i}`,
-              source: hostNode.id,
-              sourceHandle: hostIoPin.id,
-              target: peripheralNode.id,
-              targetHandle: periIoPin.id,
-              label: 'Signal',
-              animated: true,
-              style: { stroke: '#3b82f6', strokeWidth: 2 }
-            });
-          }
+        // 2. Fallback: match on description keywords (e.g. AI says 'Arduino Uno', DB has 'A000066' described as 'Arduino Uno Rev3')
+        if (!matchedComp) {
+          matchedComp = cogneeComponents.find(c => {
+            const desc = typeof c.description === 'string' ? c.description.toLowerCase() : '';
+            const cat = typeof c.category === 'string' ? c.category.toLowerCase() : '';
+            return desc.includes(aiLabelLower) || aiLabelLower.includes(desc.split(' ')[0]) ||
+              (aiLabelLower.includes('arduino') && (desc.includes('arduino') || cat.includes('microcontroller'))) ||
+              (aiLabelLower.includes('led') && cat.includes('opto')) ||
+              (aiLabelLower.includes('resistor') && cat.includes('actuator'));
+          });
         }
-      }
+
+        // Use the canonical componentName from the DB as the label so derivePins works correctly
+        const compName = matchedComp?.componentName || aiLabel;
+        const specs = matchedComp ? (matchedComp.specs || matchedComp.cogneeConfig) : null;
+        const derived = derivePins(compName, specs);
+
+        return {
+          ...node,
+          id: node?.id || `node-${idx + 1}`,
+          type: 'hardware',
+          data: {
+            ...node?.data,
+            label: compName,
+            subtitle: node?.data?.subtitle || matchedComp?.description || 'Hardware Component',
+            theme: derived.theme,
+            pins: derived.pins
+          }
+        };
+      }) : [];
 
       return {
-        type: finalType,
-        message: parsed.message || response.choices[0]?.message?.content || 'Processed project requirements.',
+        type: parsed.type === 'circuit_generated' ? 'circuit_generated' : 'chat_response',
+        message: parsed.message || 'Processed project requirements.',
         nodes: normalizedNodes,
-        edges
+        edges: parsed.edges || []
       };
     } catch (err: any) {
       console.error('OpenAI API error during agentic circuit assembly:', err);

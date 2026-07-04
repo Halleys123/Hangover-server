@@ -4,7 +4,8 @@ import { authenticate } from '../middleware/authenticate.js';
 import { Project } from '../models/Project.js';
 import { Datasheet } from '../models/Datasheet.js';
 import { ChatSession } from '../models/ChatSession.js';
-import { addDatasheetToProjectDataset } from '../services/cognee.js';
+import { addDatasheetToProjectDataset, normalizeExtractedSpecs } from '../services/cognee.js';
+import { derivePins } from '../utils/derivePins.js';
 
 const router = Router();
 router.use(authenticate);
@@ -28,15 +29,31 @@ router.get('/:id', async (req, res, next) => {
     }).populate('datasheets');
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    // Semantic healing: If existing nodes on the canvas represent 2-wire coolers or fans (e.g., TEC1-12706 or FHS-A9015S00),
-    // strip any erroneous hardcoded SIG/DATA pins so the UI displays exactly two leads: (+) RED / VCC and (-) BLACK / GND.
+    // Semantic healing: If existing nodes on the canvas represent 2-wire coolers, Arduino Uno, or ESP32,
+    // ensure the UI displays clean, physically accurate pin arrays and strip any erroneous sensor pins.
     if (project.canvas && Array.isArray(project.canvas.nodes)) {
       let modified = false;
       project.canvas.nodes.forEach((node: any) => {
         if (node && node.data && typeof node.data.label === 'string') {
           const lblStr = node.data.label.toLowerCase();
           const is2WireCooler = lblStr.includes('fhs') || lblStr.includes('tec') || lblStr.includes('peltier') || lblStr.includes('cooler') || lblStr.includes('fan');
-          if (is2WireCooler) {
+          const isArduinoUno = lblStr.includes('a000066') || lblStr.includes('uno') || lblStr.includes('arduino');
+          const isEsp32 = lblStr.includes('esp32') || lblStr.includes('wroom');
+          const isLed = lblStr.includes('led') || lblStr.includes('diode') || lblStr.includes('opto');
+
+          if (isArduinoUno) {
+            if (node.data.pins?.right?.some((p: any) => p.id?.toLowerCase() === 'data' || p.id?.toLowerCase() === 'sig') || !node.data.pins?.right?.some((p: any) => p.id?.toLowerCase() === 'd0')) {
+              const derived = derivePins(node.data.label, normalizeExtractedSpecs(node.data.label, {}));
+              node.data.pins = derived.pins;
+              modified = true;
+            }
+          } else if (isEsp32) {
+            if (node.data.pins?.right?.some((p: any) => p.id?.toLowerCase() === 'data' || p.id?.toLowerCase() === 'sig') || !node.data.pins?.right?.some((p: any) => p.id?.toLowerCase() === 'gpio2')) {
+              const derived = derivePins(node.data.label, normalizeExtractedSpecs(node.data.label, {}));
+              node.data.pins = derived.pins;
+              modified = true;
+            }
+          } else if (is2WireCooler && (node.data.pins?.right?.length > 0 || !node.data.pins?.left?.some((p: any) => p.id === 'vcc'))) {
             node.data.pins = {
               left: [
                 { id: 'vcc', label: '(+) RED / VCC', color: 'red' },
@@ -45,6 +62,12 @@ router.get('/:id', async (req, res, next) => {
               right: [], // Remove any incorrect data wire
             };
             modified = true;
+          } else if (isLed) {
+            if (!node.data.pins?.right?.some((p: any) => p.id?.toLowerCase() === 'cathode' || p.label?.toLowerCase().includes('cathode'))) {
+              const derived = derivePins(node.data.label, normalizeExtractedSpecs(node.data.label, {}));
+              node.data.pins = derived.pins;
+              modified = true;
+            }
           }
         }
       });
@@ -177,34 +200,24 @@ router.post('/:id/datasheets', async (req, res, next) => {
     try {
       await addDatasheetToProjectDataset(datasheet, req.params.id);
       
-      const greetingText = `New datasheet **${datasheet.name}** attached to workspace. How would you like to integrate it into your circuit design?`;
-      if (project.chatHistory && project.chatHistory.length > 0) {
-        const latestSession = project.chatHistory[project.chatHistory.length - 1];
-        latestSession.chats.push({
-          role: 'assistant',
-          text: greetingText,
-          timestamp: new Date()
-        });
-        await project.save();
-      } else {
-        project.chatHistory = [{
-          _id: new Types.ObjectId(),
-          title: 'Main Conversation',
-          chats: [
-            {
-              role: 'assistant',
-              text: 'Hello! I am your **AI Hardware Architect**. Tell me what project or circuit goal you want to build!',
-              timestamp: new Date()
-            },
-            {
-              role: 'assistant',
-              text: greetingText,
-              timestamp: new Date()
-            }
-          ]
-        }];
-        await project.save();
-      }
+      const cleanName = datasheet.name.replace(/\.pdf$/i, '').replace(/_Datasheet|_Spec|_Specifications/i, '').trim() || 'Datasheet';
+      const greetingText = `New datasheet **${datasheet.name}** attached to workspace. I have created a dedicated, isolated chat context for **${cleanName}** so there is no confusion with previous datasheets. How would you like to integrate it into your circuit design?`;
+      
+      const newSessionId = new Types.ObjectId();
+      const newSession = {
+        _id: newSessionId,
+        title: `${cleanName} Context`,
+        chats: [
+          {
+            role: 'assistant',
+            text: greetingText,
+            timestamp: new Date()
+          }
+        ]
+      };
+      if (!project.chatHistory) project.chatHistory = [];
+      project.chatHistory.push(newSession as any);
+      await project.save();
     } catch (e) {
       console.error('[Projects] Failed to sync datasheet link metadata:', e);
     }

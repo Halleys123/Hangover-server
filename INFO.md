@@ -59,6 +59,22 @@ graph TD
     API -->|JSON Response with Nodes & Edges| Canvas
 ```
 
+### Why Both MongoDB and Cognee? (Division of Storage vs. Cognitive Intelligence)
+
+A common architectural question is: **If data is stored in MongoDB, what is Cognee doing in the loop?** 
+
+The answer lies in the fundamental difference between **Application Persistence (MongoDB)** and **Agentic Engineering Memory (Cognee)**:
+
+| Layer | Technology | Primary Role & Stored Data | Why It Cannot Do The Other's Job |
+| :--- | :--- | :--- | :--- |
+| **Persistence Store** | **MongoDB** | **UI & Workspace State:** Stores user accounts, project names, canvas visual layout (`nodes` & `edges` x/y coordinates), and file status records (`Datasheet` model). | MongoDB stores static, flat documents. It cannot execute semantic graph traversals or hybrid vector searches across 60-page PDF specifications during an AI conversation. |
+| **Cognitive Engine** | **Cognee** | **AI Knowledge Graph & Vector Memory:** Stores extracted entity nodes (`Pin D2`, `5V Rail`), deterministic relationships (`OPERATES_AT`, `HAS_PIN`), and high-dimensional semantic vectors of engineering prose. | Cognee is specialized for AI reasoning (`remember` / `cognify` / `recall`). It is not designed to serve fast REST UI state hydration for visual drag-and-drop canvas layout. |
+
+#### The Loop in Action:
+1. **Ingestion (`cognee.remember()`)**: When a PDF is uploaded, MongoDB records the file metadata. Simultaneously, Cognee decomposes the text into graph entities and vector embeddings via its cloud/local engine.
+2. **Retrieval (`cognee.recall()`)**: When a user chats or asks to *Generate Circuit*, the system does not dump raw MongoDB documents to the LLM. Instead, it queries Cognee to perform relational traversal—instantly retrieving exact electrical constraints (e.g., *Pin D2 outputs 20mA max* vs. *Peltier draws 6400mA*).
+3. **Agentic Action**: The AI uses Cognee's graph facts to catch electrical incompatibilities (recommending a MOSFET driver), generates the schematic wiring, and saves the resulting visual coordinates back to MongoDB.
+
 ---
 
 ## 2. Client-Server Interaction Details

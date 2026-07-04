@@ -14,6 +14,7 @@ import datasheetsRouter from './routes/datasheets.js';
 import chatRouter from './routes/chat.js';
 import validateRouter from './routes/validate.js';
 import aiRouter from './routes/ai.js';
+import { validateAndGetAIConfig } from './services/aiConfig.js';
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -37,6 +38,9 @@ app.use('/api/chat', chatRouter);
 app.use('/api/validate', validateRouter);
 
 app.use(errorHandler);
+
+// Validate AI provider environment variables on startup
+validateAndGetAIConfig(true);
 
 mongoose
   .connect(MONGO_URI)

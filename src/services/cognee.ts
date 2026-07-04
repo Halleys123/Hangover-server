@@ -53,96 +53,100 @@ export function normalizeExtractedSpecs(name: string, specs: any): any {
     specs.Dimensions.width = specs.Dimensions.width || { value: 53.4, unit: "mm" };
     specs.Dimensions.height = specs.Dimensions.height || { value: 15.0, unit: "mm" };
 
-    // Initializing structure for pin healing
-    if (!specs.Pins || typeof specs.Pins !== 'object') {
-      specs.Pins = { power: [], digital: [], analog: [] };
-    }
-    const pins = specs.Pins;
-    pins.power = Array.isArray(pins.power) ? pins.power : [];
-    pins.digital = Array.isArray(pins.digital) ? pins.digital : [];
-    pins.analog = Array.isArray(pins.analog) ? pins.analog : [];
-
-    /* 
-     * Semantic Comment 6:
-     * Standard Arduino Uno Rev3 Power rails: 5V, 3.3V, GND, VIN, RESET.
-     * Arduino Uno Rev3 Digital I/O pins: D0 to D13 (with D0/D1 mapped to RX/TX).
-     * Arduino Uno Rev3 Analog inputs: A0 to A5.
-     * We populate these deterministically to prevent incomplete data states when LLM outputs lazy representations.
-     */
-    const reqPower = [
-      { id: "5V", name: "5V Regulated Output", voltage: 5.0, type: "power" },
-      { id: "3.3V", name: "3.3V Regulated Output", voltage: 3.3, type: "power" },
-      { id: "GND", name: "Common Ground", voltage: 0.0, type: "ground" },
-      { id: "VIN", name: "External Input Voltage", voltage: 9.0, type: "power" },
-      { id: "RESET", name: "Reset Pin", voltage: 5.0, type: "power" }
-    ];
-    reqPower.forEach(p => {
-      if (!pins.power.some((existing: any) => existing.id?.toUpperCase() === p.id)) {
-        pins.power.push(p);
-      }
-    });
-
-    for (let i = 0; i <= 13; i++) {
-      const pinId = `D${i}`;
-      if (!pins.digital.some((existing: any) => existing.id?.toUpperCase() === pinId)) {
-        pins.digital.push({
-          id: pinId,
-          name: `Digital I/O Pin ${i}`,
-          maxVoltageTolerance: 5.0,
-          outputVoltage: 5.0,
-          type: "bidirectional"
-        });
-      }
-    }
-
-    for (let i = 0; i <= 5; i++) {
-      const pinId = `A${i}`;
-      if (!pins.analog.some((existing: any) => existing.id?.toUpperCase() === pinId)) {
-        pins.analog.push({
-          id: pinId,
-          name: `Analog Input Pin ${i}`,
-          maxVoltageTolerance: 5.0,
-          type: "analog"
-        });
-      }
-    }
+    // Ensure clean, complete physical pin arrays for Arduino Uno Rev3 (A000066)
+    specs.Pins = {
+      power: [
+        { id: "5V", name: "5V Regulated Output", voltage: 5.0, type: "power", side: "left" },
+        { id: "3.3V", name: "3.3V Regulated Output", voltage: 3.3, type: "power", side: "left" },
+        { id: "GND", name: "Common Ground", voltage: 0.0, type: "ground", side: "left" },
+        { id: "VIN", name: "External Input Voltage", voltage: 9.0, type: "power", side: "left" },
+        { id: "RESET", name: "Reset Pin", voltage: 5.0, type: "power", side: "left" }
+      ],
+      digital: Array.from({ length: 14 }, (_, i) => ({
+        id: `D${i}`,
+        name: `Digital I/O Pin ${i}${i === 0 ? ' (RX)' : i === 1 ? ' (TX)' : i === 3 || i === 5 || i === 6 || i === 9 || i === 10 || i === 11 ? ' (PWM)' : ''}`,
+        maxVoltageTolerance: 5.0,
+        outputVoltage: 5.0,
+        type: "bidirectional",
+        side: "right"
+      })),
+      analog: Array.from({ length: 6 }, (_, i) => ({
+        id: `A${i}`,
+        name: `Analog Input Pin ${i}`,
+        maxVoltageTolerance: 5.0,
+        type: "analog",
+        side: "left"
+      }))
+    };
   } else if (isEsp32) {
     specs["Component Classification"] = "32-Bit Microcontroller / ESP32 NodeMCU Module";
 
-    if (!specs.Pins || typeof specs.Pins !== 'object') {
-      specs.Pins = { power: [], digital: [], analog: [] };
+    if (!specs["Electrical Limits"] || typeof specs["Electrical Limits"] !== 'object') {
+      specs["Electrical Limits"] = {};
     }
-    const pins = specs.Pins;
-    pins.power = Array.isArray(pins.power) ? pins.power : [];
-    pins.digital = Array.isArray(pins.digital) ? pins.digital : [];
-    pins.analog = Array.isArray(pins.analog) ? pins.analog : [];
+    specs["Electrical Limits"].minOperatingVoltage = specs["Electrical Limits"].minOperatingVoltage || 3.0;
+    specs["Electrical Limits"].maxOperatingVoltage = specs["Electrical Limits"].maxOperatingVoltage || 3.6;
+    specs["Electrical Limits"].nominalVoltage = specs["Electrical Limits"].nominalVoltage || 3.3;
+    specs["Electrical Limits"].maxCurrentmA = specs["Electrical Limits"].maxCurrentmA || 500;
+    specs["Electrical Limits"].maxPowerDissipationW = specs["Electrical Limits"].maxPowerDissipationW || 1.0;
 
-    const reqPower = [
-      { id: "3V3", name: "3.3V Output", voltage: 3.3, type: "power" },
-      { id: "GND", name: "Common Ground", voltage: 0.0, type: "ground" },
-      { id: "VIN", name: "5V Input Voltage", voltage: 5.0, type: "power" }
-    ];
-    reqPower.forEach(p => {
-      if (!pins.power.some((existing: any) => existing.id?.toUpperCase() === p.id)) {
-        pins.power.push(p);
-      }
-    });
-
-    if (pins.digital.length < 5) {
-      const gpios = [2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
-      gpios.forEach(g => {
-        const pinId = `GPIO${g}`;
-        if (!pins.digital.some((existing: any) => existing.id?.toUpperCase() === pinId)) {
-          pins.digital.push({
-            id: pinId,
-            name: `General Purpose I/O Pin ${g}`,
-            maxVoltageTolerance: 3.3,
-            outputVoltage: 3.3,
-            type: "bidirectional"
-          });
-        }
-      });
+    if (!specs.Dimensions || typeof specs.Dimensions !== 'object') {
+      specs.Dimensions = {};
     }
+    specs.Dimensions.length = specs.Dimensions.length || { value: 52.0, unit: "mm" };
+    specs.Dimensions.width = specs.Dimensions.width || { value: 28.0, unit: "mm" };
+    specs.Dimensions.height = specs.Dimensions.height || { value: 5.0, unit: "mm" };
+
+    const gpios = [2, 4, 5, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33];
+    specs.Pins = {
+      power: [
+        { id: "3V3", name: "3.3V Regulated Output", voltage: 3.3, type: "power", side: "left" },
+        { id: "GND", name: "Common Ground", voltage: 0.0, type: "ground", side: "left" },
+        { id: "VIN", name: "5V Input Voltage", voltage: 5.0, type: "power", side: "left" }
+      ],
+      digital: gpios.map(g => ({
+        id: `GPIO${g}`,
+        name: `General Purpose I/O Pin ${g}`,
+        maxVoltageTolerance: 3.3,
+        outputVoltage: 3.3,
+        type: "bidirectional",
+        side: "right"
+      })),
+      analog: [
+        { id: "ADC1_0", name: "Analog ADC 1 Channel 0 (GPIO36)", maxVoltageTolerance: 3.3, type: "analog", side: "left" },
+        { id: "ADC1_3", name: "Analog ADC 1 Channel 3 (GPIO39)", maxVoltageTolerance: 3.3, type: "analog", side: "left" },
+        { id: "ADC1_6", name: "Analog ADC 1 Channel 6 (GPIO34)", maxVoltageTolerance: 3.3, type: "analog", side: "left" },
+        { id: "ADC1_7", name: "Analog ADC 1 Channel 7 (GPIO35)", maxVoltageTolerance: 3.3, type: "analog", side: "left" }
+      ]
+    };
+  } else if (nStr.includes('led') || nStr.includes('light') || nStr.includes('diode') || nStr.includes('opto') || classStr.includes('led') || classStr.includes('diode')) {
+    specs["Component Classification"] = "Optoelectronic LED / Light Emitting Diode";
+    if (!specs["Electrical Limits"] || typeof specs["Electrical Limits"] !== 'object') {
+      specs["Electrical Limits"] = {};
+    }
+    specs["Electrical Limits"].minOperatingVoltage = specs["Electrical Limits"].minOperatingVoltage || 1.8;
+    specs["Electrical Limits"].maxOperatingVoltage = specs["Electrical Limits"].maxOperatingVoltage || 3.3;
+    specs["Electrical Limits"].nominalVoltage = specs["Electrical Limits"].nominalVoltage || 2.0;
+    specs["Electrical Limits"].maxCurrentmA = specs["Electrical Limits"].maxCurrentmA || 20;
+    specs["Electrical Limits"].maxPowerDissipationW = specs["Electrical Limits"].maxPowerDissipationW || 0.1;
+
+    if (!specs.Dimensions || typeof specs.Dimensions !== 'object') {
+      specs.Dimensions = {};
+    }
+    specs.Dimensions.length = specs.Dimensions.length || { value: 5.0, unit: "mm" };
+    specs.Dimensions.width = specs.Dimensions.width || { value: 5.0, unit: "mm" };
+    specs.Dimensions.height = specs.Dimensions.height || { value: 8.6, unit: "mm" };
+
+    specs.Pins = {
+      power: [
+        { id: "ANODE", name: "Anode (+ / Long Leg)", voltage: 2.0, type: "power", side: "left" }
+      ],
+      ground: [
+        { id: "CATHODE", name: "Cathode (- / Short Leg)", voltage: 0.0, type: "ground", side: "right" }
+      ],
+      digital: [],
+      analog: []
+    };
   }
 
   return specs;
@@ -181,9 +185,10 @@ ${rawText.substring(0, 30000)}`;
 Text Excerpt:
 ${rawText.substring(15000, 65000)}`;
 
+    const systemPrompt = `You are an expert electronic hardware data extraction AI. Extract technical parameters from the datasheet section into a strict, valid JSON object without markdown formatting or extra commentary.`;
     const [ans1, ans2] = await Promise.all([
-      openaiService.generateChatResponse(promptSec1, { component: cleanName, section: 1 }),
-      openaiService.generateChatResponse(promptSec2, { component: cleanName, section: 2 })
+      openaiService.generateJSONResponse(systemPrompt, promptSec1),
+      openaiService.generateJSONResponse(systemPrompt, promptSec2)
     ]);
 
     const m1 = ans1.match(/\{[\s\S]*\}/);
@@ -304,7 +309,8 @@ ${rawText.substring(0, 60000)}`;
       return healedSpecs;
     }
 
-    const rawAnswer = await openaiService.generateChatResponse(prompt, { component: cleanName });
+    const systemPrompt = `You are an expert electronic hardware data extraction AI. Your task is to analyze technical datasheet text excerpts and extract comprehensive, accurate hardware engineering specifications into a strict, valid JSON object. Do not include markdown code block syntax, backticks, or any explanations outside the JSON object. You must extract all pins (power, digital, analog), electrical limits, dimensions, operating temperatures, and application notes accurately from the document text.`;
+    const rawAnswer = await openaiService.generateJSONResponse(systemPrompt, prompt);
     const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
@@ -323,9 +329,11 @@ ${rawText.substring(0, 60000)}`;
     console.warn('LLM extraction encountered an issue, using detailed structured extraction fallback:', err);
   }
 
-  // Comprehensive deterministic structured extraction from real text
-  const isPeltier = cleanName.toLowerCase().includes('tec') || rawText.toLowerCase().includes('peltier') || rawText.toLowerCase().includes('thermoelectric');
-  const isSensor = cleanName.toLowerCase().includes('dht') || rawText.toLowerCase().includes('sensor') || rawText.toLowerCase().includes('humidity');
+  // Comprehensive deterministic structured extraction from component filename/title
+  const lowerName = cleanName.toLowerCase();
+  const isPeltier = lowerName.includes('tec') || lowerName.includes('peltier') || lowerName.includes('cooler') || lowerName.includes('thermoelectric');
+  const isSensor = lowerName.includes('dht') || lowerName.includes('temp') || lowerName.includes('humidity') || lowerName.includes('sensor') || lowerName.includes('mpu') || lowerName.includes('bmp') || lowerName.includes('bme');
+  const isLed = lowerName.includes('led') || lowerName.includes('light') || lowerName.includes('diode') || lowerName.includes('opto') || lowerName.includes('lamp');
 
   const specs = isPeltier ? {
     "Component Classification": "Thermoelectric Cooler Module / Peltier Heat Pump",
@@ -379,6 +387,33 @@ ${rawText.substring(0, 60000)}`;
     "Temperature Range": { "minC": -40, "maxC": 80 },
     "Communication Protocols": ["Single-Wire Digital Serial"],
     "Application Notes": "Requires 4.7k to 10k pull-up resistor between DATA and VCC pin."
+  } : isLed ? {
+    "Component Classification": "Optoelectronic LED / Light Emitting Diode",
+    "Electrical Limits": {
+      "minOperatingVoltage": 1.8,
+      "maxOperatingVoltage": 3.3,
+      "nominalVoltage": 2.0,
+      "maxCurrentmA": 20,
+      "maxPowerDissipationW": 0.1
+    },
+    "Dimensions": {
+      "length": { "value": 5.0, "unit": "mm" },
+      "width": { "value": 5.0, "unit": "mm" },
+      "height": { "value": 8.6, "unit": "mm" }
+    },
+    "Pins": {
+      "power": [
+        { "id": "ANODE", "name": "Anode (+ / Long Leg)", "voltage": 2.0, "type": "power", "side": "left" }
+      ],
+      "ground": [
+        { "id": "CATHODE", "name": "Cathode (- / Short Leg)", "voltage": 0.0, "type": "ground", "side": "right" }
+      ],
+      "digital": [],
+      "analog": []
+    },
+    "Temperature Range": { "minC": -40, "maxC": 85 },
+    "Communication Protocols": ["Direct Analog DC"],
+    "Application Notes": "Must use a current-limiting resistor (e.g. 220 ohm or 330 ohm) in series when connecting to 3.3V or 5V logic rails."
   } : {
     "Component Classification": "32-Bit Microcontroller / Programmable Controller",
     "Electrical Limits": {
@@ -504,7 +539,8 @@ Datasheet Text Excerpt:
 ${rawText.substring(0, 60000)}`;
 
   try {
-    const rawAnswer = await openaiService.generateChatResponse(prompt, { component: cleanName, refinementPrompt });
+    const systemPrompt = `You are an expert hardware engineering AI. Refine and improve the technical hardware specifications based on the user's instructions and the document text. Return ONLY a strict, valid JSON object without markdown formatting or extra commentary.`;
+    const rawAnswer = await openaiService.generateJSONResponse(systemPrompt, prompt);
     const jsonMatch = rawAnswer.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);

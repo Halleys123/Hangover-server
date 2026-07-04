@@ -18,18 +18,19 @@ export async function generateChatResponse(
 }
 
 /**
- * Validate circuit nodes and edges using Ollama/OpenAI.
+ * Validate circuit nodes and edges using Ollama/OpenAI/OpenRouter.
  */
 export async function validateCircuit(
   nodes: CanvasNode[],
   edges: CanvasEdge[],
 ): Promise<ValidationResult> {
+  const systemPrompt = `You are an expert electronic hardware safety validation AI. Analyze the circuit wiring and return strict JSON with validation status and any compatibility issues.`;
   const prompt = `Analyze these circuit nodes and edges for hardware compatibility issues (voltage mismatches, current limits, missing pull-ups).
 Nodes: ${JSON.stringify(nodes)}
 Edges: ${JSON.stringify(edges)}
 Return JSON with status and issues array.`;
 
-  const response = await openaiService.generateChatResponse(prompt, {});
+  const response = await openaiService.generateJSONResponse(systemPrompt, prompt);
   return {
     valid: !response.toLowerCase().includes('hazard') && !response.toLowerCase().includes('unsafe'),
     issues: []

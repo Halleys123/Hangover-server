@@ -8,8 +8,8 @@ import { Datasheet } from '../models/Datasheet.js';
 import { Component } from '../models/Component.js';
 import { Project } from '../models/Project.js';
 import { pdfQueue } from '../services/pdfQueue.js';
-import { refineDatasheetSpecs } from '../services/cognee.js';
-import { cognee } from '../services/cogneeClient.js';
+import { refineDatasheetSpecs, normalizeExtractedSpecs } from '../services/cognee.js';
+import { derivePins } from '../utils/derivePins.js';
 
 const UPLOAD_DIR = path.resolve('uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -31,11 +31,71 @@ const upload = multer({
 const router = Router();
 router.use(authenticate);
 
+async function healDatasheetList(sheets: any[]): Promise<any[]> {
+  for (const sheet of sheets) {
+    if (!sheet) continue;
+    const nStr = (sheet.name || '').toLowerCase();
+    const classStr = ((sheet.cogneeConfig && sheet.cogneeConfig['Component Classification']) || '').toString().toLowerCase();
+    
+    const isArduinoUno = nStr.includes('a000066') || nStr.includes('uno') || nStr.includes('arduino') || classStr.includes('uno') || classStr.includes('arduino');
+    const isEsp32 = nStr.includes('esp32') || nStr.includes('wroom') || classStr.includes('esp32');
+    const is2WireCooler = nStr.includes('fhs') || nStr.includes('tec') || nStr.includes('peltier') || nStr.includes('cooler') || nStr.includes('fan');
+    const isLed = nStr.includes('led') || nStr.includes('light') || nStr.includes('diode') || nStr.includes('opto') || classStr.includes('led') || classStr.includes('diode');
+
+    let updated = false;
+    const healedConfig = normalizeExtractedSpecs(sheet.name, sheet.cogneeConfig || {});
+
+    if (isArduinoUno) {
+      if (!sheet.cogneeConfig || sheet.cogneeConfig["Component Classification"]?.toLowerCase().includes('sensor') || !sheet.cogneeConfig?.Pins?.digital?.some((p: any) => p.id?.toLowerCase() === 'd0')) {
+        sheet.cogneeConfig = healedConfig;
+        updated = true;
+      }
+    } else if (isEsp32) {
+      if (!sheet.cogneeConfig || sheet.cogneeConfig["Component Classification"]?.toLowerCase().includes('sensor') || !sheet.cogneeConfig?.Pins?.digital?.some((p: any) => p.id?.toLowerCase() === 'gpio2')) {
+        sheet.cogneeConfig = healedConfig;
+        updated = true;
+      }
+    } else if (is2WireCooler && sheet.cogneeConfig?.Pins?.digital?.length > 0) {
+      sheet.cogneeConfig = healedConfig;
+      updated = true;
+    } else if (isLed) {
+      if (!sheet.cogneeConfig || sheet.cogneeConfig["Component Classification"]?.toLowerCase().includes('microcontroller') || !sheet.cogneeConfig?.Pins?.ground?.some((p: any) => p.id?.toLowerCase() === 'cathode' || p.name?.toLowerCase().includes('cathode'))) {
+        sheet.cogneeConfig = healedConfig;
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      try {
+        await Datasheet.updateOne({ _id: sheet._id }, {
+          $set: { cogneeConfig: sheet.cogneeConfig }
+        });
+        const comp = await Component.findOne({ datasheetId: sheet._id });
+        if (comp) {
+          const derived = derivePins(comp.name, sheet.cogneeConfig);
+          const cat = isArduinoUno || isEsp32 ? 'microcontroller' : isLed ? 'optoelectronics' : comp.category;
+          const desc = isArduinoUno ? '32-Bit Microcontroller / Arduino Uno Rev3 Board • AI Specs' : isEsp32 ? '32-Bit Microcontroller / ESP32 NodeMCU Module • AI Specs' : isLed ? 'Optoelectronic LED / Light Emitting Diode • AI Specs' : comp.description;
+          await Component.updateOne({ _id: comp._id }, {
+            $set: {
+              category: cat,
+              description: desc,
+              cogneeConfig: sheet.cogneeConfig,
+              diagram: derived
+            }
+          });
+        }
+      } catch {}
+    }
+  }
+  return sheets;
+}
+
 router.get('/', async (req, res, next) => {
   try {
     const sheets = await Datasheet.find({ userId: req.user!._id }).sort({
       uploadedAt: -1,
     });
+    await healDatasheetList(sheets);
     res.json(sheets);
   } catch (err) {
     next(err);
@@ -49,6 +109,7 @@ router.get('/:id', async (req, res, next) => {
       userId: req.user!._id,
     });
     if (!sheet) return res.status(404).json({ error: 'Datasheet not found' });
+    await healDatasheetList([sheet]);
     res.json(sheet);
   } catch (err) {
     next(err);
@@ -238,13 +299,6 @@ router.delete('/:id', async (req, res, next) => {
       } else if (fs.existsSync(sheet.filePath)) {
         try { fs.unlinkSync(sheet.filePath); } catch (err) { console.error('Failed to unlink raw path:', err); }
       }
-    }
-
-    // Forget dataset from Cognee Cloud
-    try {
-      await cognee.forget({ dataset: sheet._id.toString() });
-    } catch (e) {
-      console.error('[Datasheets] Failed to trigger Cognee forget:', e);
     }
 
     // Remove any components auto-created for or linked exclusively to this datasheet

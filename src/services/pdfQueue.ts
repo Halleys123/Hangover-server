@@ -37,7 +37,7 @@ class PDFQueueService {
 
       console.log(`[PDFQueue] Starting real text extraction & LLM analysis for ${job.originalName}...`);
       const cogneeConfig = await indexDatasheet(job.filePath, job.originalName, job.datasheetId);
-      console.log(`[PDFQueue] Successfully extracted specs via Ollama/Cognee for ${job.originalName}:`, cogneeConfig);
+      console.log(`[PDFQueue] Successfully extracted specs via AI Provider (${process.env.AI_PROVIDER || 'openrouter'}) / Cognee for ${job.originalName}:`, cogneeConfig);
 
       const sheet = await Datasheet.findByIdAndUpdate(job.datasheetId, {
         status: 'completed',
@@ -49,7 +49,21 @@ class PDFQueueService {
         const existingComp = await Component.findOne({ datasheetId: sheet._id });
         if (!existingComp) {
           const cleanName = job.originalName.replace(/\.pdf$/i, '').replace(/_Datasheet|_Spec|_Specifications/i, '').trim();
-          const isSensor = job.originalName.toLowerCase().includes('dht') || job.originalName.toLowerCase().includes('sensor') || job.originalName.toLowerCase().includes('mpu');
+          const lower = job.originalName.toLowerCase();
+          const isSensor = lower.includes('dht') || lower.includes('sensor') || lower.includes('mpu') || lower.includes('temp') || lower.includes('humidity') || lower.includes('bmp') || lower.includes('bme');
+          const isLed = lower.includes('led') || lower.includes('light') || lower.includes('diode') || lower.includes('lamp') || lower.includes('opto');
+          const isCooler = lower.includes('tec') || lower.includes('peltier') || lower.includes('cooler') || lower.includes('fan') || lower.includes('heat sink');
+          const isPower = lower.includes('power') || lower.includes('pmt') || lower.includes('converter') || lower.includes('adapter') || lower.includes('supply');
+          const isMcu = lower.includes('arduino') || lower.includes('uno') || lower.includes('esp32') || lower.includes('mcu') || lower.includes('microcontroller') || lower.includes('stm32') || lower.includes('pic') || lower.includes('atmega') || lower.includes('rp2040');
+
+          let cat = 'actuator';
+          if (isMcu) cat = 'microcontroller';
+          else if (isSensor) cat = 'sensor';
+          else if (isLed) cat = 'optoelectronics';
+          else if (isCooler || isPower) cat = 'power';
+          else if ((cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('microcontroller')) cat = 'microcontroller';
+          else if ((cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('sensor')) cat = 'sensor';
+          else if ((cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('led') || (cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('diode')) cat = 'optoelectronics';
           
           // Derive accurate deterministic visual schematic pins (eliminating random SIG/DATA leads on 2-wire coolers/fans)
           const derivedDiagram = derivePins(cleanName, cogneeConfig);
@@ -57,7 +71,7 @@ class PDFQueueService {
           await Component.create({
             userId: sheet.userId,
             datasheetId: sheet._id,
-            category: isSensor ? 'sensor' : 'microcontroller',
+            category: cat,
             name: cleanName || 'AI Component',
             description: `${cogneeConfig["Component Classification"] || ((cogneeConfig["Electrical Limits"] as any)?.nominalVoltage ? `${(cogneeConfig["Electrical Limits"] as any).nominalVoltage}V Nominal` : 'AI Extracted')} • AI Specs`,
             diagram: derivedDiagram,

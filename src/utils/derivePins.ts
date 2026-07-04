@@ -32,25 +32,34 @@ export function derivePins(name: string, cogneeConfig: Record<string, any> | nul
   // 1. Check if cogneeConfig.Pins explicitly has populated power/digital/analog arrays
   if (cogneeConfig && cogneeConfig.Pins && typeof cogneeConfig.Pins === 'object') {
     const pinsObj = cogneeConfig.Pins as Record<string, any>;
-    const power = Array.isArray(pinsObj.power) ? pinsObj.power : [];
-    const digital = Array.isArray(pinsObj.digital) ? pinsObj.digital : [];
-    const analog = Array.isArray(pinsObj.analog) ? pinsObj.analog : [];
+    const power = Array.isArray(pinsObj.power) ? pinsObj.power : (Array.isArray(pinsObj.pwr) ? pinsObj.pwr : []);
+    const ground = Array.isArray(pinsObj.ground) ? pinsObj.ground : (Array.isArray(pinsObj.gnd) ? pinsObj.gnd : []);
+    const digital = Array.isArray(pinsObj.digital) ? pinsObj.digital : (Array.isArray(pinsObj.dig) ? pinsObj.dig : []);
+    const analog = Array.isArray(pinsObj.analog) ? pinsObj.analog : (Array.isArray(pinsObj.ana) ? pinsObj.ana : []);
+    const others = Object.keys(pinsObj)
+      .filter(k => !['power', 'pwr', 'ground', 'gnd', 'digital', 'dig', 'analog', 'ana'].includes(k))
+      .flatMap(k => Array.isArray(pinsObj[k]) ? pinsObj[k] : []);
 
-    if (power.length > 0 || digital.length > 0 || analog.length > 0) {
+    if (power.length > 0 || ground.length > 0 || digital.length > 0 || analog.length > 0 || others.length > 0) {
       const mapPin = (p: any, idx: number, prefix: string, defaultColor: string): SchematicPin & { explicitSide?: string } => {
         const idStr = p.id || `p_${prefix}_${idx}`;
         const nameStr = p.name || idStr;
         const isGnd =
+          prefix === 'gnd' ||
+          p.type === 'ground' ||
           idStr.toLowerCase().includes('gnd') ||
           idStr.toLowerCase().includes('black') ||
           idStr.toLowerCase().includes('neg') ||
+          idStr.toLowerCase().includes('cathode') ||
           nameStr.toLowerCase().includes('gnd') ||
           nameStr.toLowerCase().includes('black') ||
-          nameStr.toLowerCase().includes('neg');
+          nameStr.toLowerCase().includes('neg') ||
+          nameStr.toLowerCase().includes('cathode');
         let color = defaultColor;
-        if (prefix === 'pwr') color = isGnd ? 'gray' : 'red';
+        if (prefix === 'pwr' || prefix === 'gnd') color = isGnd ? 'gray' : 'red';
         else if (prefix === 'ana') color = 'green';
         else if (prefix === 'dig') color = 'blue';
+        else color = isGnd ? 'gray' : defaultColor;
 
         return {
           id: idStr.toLowerCase(),
@@ -61,22 +70,24 @@ export function derivePins(name: string, cogneeConfig: Record<string, any> | nul
       };
 
       const pwrPins = power.map((p: any, idx: number) => mapPin(p, idx, 'pwr', 'red'));
+      const gndPins = ground.map((p: any, idx: number) => mapPin(p, idx, 'gnd', 'gray'));
       const anaPins = analog.map((p: any, idx: number) => mapPin(p, idx, 'ana', 'green'));
       const digPins = digital.map((p: any, idx: number) => mapPin(p, idx, 'dig', 'blue'));
+      const othPins = others.map((p: any, idx: number) => mapPin(p, idx, 'oth', 'blue'));
 
       let left: SchematicPin[] = [];
       let right: SchematicPin[] = [];
       const unassigned: SchematicPin[] = [];
 
-      [...pwrPins, ...anaPins, ...digPins].forEach(p => {
+      [...pwrPins, ...gndPins, ...anaPins, ...digPins, ...othPins].forEach(p => {
         if (p.explicitSide === 'left') left.push(p);
         else if (p.explicitSide === 'right') right.push(p);
         else unassigned.push(p);
       });
 
-      // Default functional partitioning: Power rails + Analog inputs on left, Digital I/O on right
+      // Default functional partitioning: Power rails + Analog inputs on left, Digital I/O + Ground on right
       const defaultLeft = unassigned.filter(p => pwrPins.some(pw => pw.id === p.id) || anaPins.some(an => an.id === p.id));
-      const defaultRight = unassigned.filter(p => digPins.some(dg => dg.id === p.id));
+      const defaultRight = unassigned.filter(p => digPins.some(dg => dg.id === p.id) || gndPins.some(gn => gn.id === p.id) || othPins.some(ot => ot.id === p.id));
 
       left = [...left, ...defaultLeft];
       right = [...right, ...defaultRight];
@@ -139,6 +150,26 @@ export function derivePins(name: string, cogneeConfig: Record<string, any> | nul
         right: [
           { id: 'vout_pos', label: 'VOUT (+)', color: 'red' },
           { id: 'vout_neg', label: 'VOUT (-)', color: 'gray' },
+        ],
+      },
+    };
+  }
+
+  const isLedOrDiode =
+    combined.includes('led') ||
+    combined.includes('diode') ||
+    combined.includes('optoelectronic') ||
+    combined.includes('lamp');
+
+  if (isLedOrDiode) {
+    return {
+      theme: 'blue',
+      pins: {
+        left: [
+          { id: 'anode', label: '(+) ANODE', color: 'red' },
+        ],
+        right: [
+          { id: 'cathode', label: '(-) CATHODE / GND', color: 'gray' },
         ],
       },
     };

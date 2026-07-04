@@ -1,5 +1,4 @@
 import fs from 'fs';
-import crypto from 'crypto';
 
 export interface PinConstraint {
   pinNumber: string | number;
@@ -24,15 +23,6 @@ export interface ComponentGraphNode {
 // Internal memory store mapping dataset -> componentName -> ComponentGraphNode
 const memoryGraphStore: Map<string, Map<string, ComponentGraphNode>> = new Map();
 
-function toUuid(name: string): string {
-  // If it's already a valid 32-char simple UUID or standard 36-char UUID, return it
-  if (/^[0-9a-fA-F]{32}$/.test(name) || /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/.test(name)) {
-    return name.toLowerCase();
-  }
-  // Generate deterministic UUID simple hex representation using MD5
-  return crypto.createHash('md5').update(name).digest('hex');
-}
-
 export class CogneeClient {
   private getApiUrl(): string | undefined {
     return process.env.COGNEE_BASE_URL || process.env.COGNEE_API_URL;
@@ -44,11 +34,6 @@ export class CogneeClient {
       headers['X-API-KEY'] = process.env.COGNEE_API_KEY;
     }
     return headers;
-  }
-
-  private logCall(operation: string, details: string) {
-    const timestamp = new Date().toISOString();
-    console.log(`[Cognee Client] [${timestamp}] OPERATION: ${operation.toUpperCase()} | ${details}`);
   }
 
   /**
@@ -67,8 +52,6 @@ export class CogneeClient {
     if (!memoryGraphStore.has(dataset)) {
       memoryGraphStore.set(dataset, new Map());
     }
-
-    const datasetName = toUuid(dataset);
 
     // === COGNEE CLOUD: Upload to real Cognee API ===
     const apiUrl = this.getApiUrl();
@@ -92,9 +75,10 @@ export class CogneeClient {
           form.append('data', jsonBlob, `${componentName.replace(/[^a-zA-Z0-9_-]/g, '_')}_extracted.json`);
         }
 
+        const datasetName = dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
         form.append('datasetName', datasetName);
 
-        this.logCall('REMEMBER_ADD_START', `Dataset: ${datasetName} (raw: ${dataset}), Component: ${componentName}, API URL: ${apiUrl}/api/v1/add`);
+        console.log(`[Cognee Cloud] Uploading to ${apiUrl}/api/v1/add (dataset: ${datasetName}, component: ${componentName})...`);
 
         const addRes = await fetch(`${apiUrl}/api/v1/add`, {
           method: 'POST',
@@ -104,11 +88,10 @@ export class CogneeClient {
 
         if (addRes.ok) {
           const addResult = await addRes.json();
-          this.logCall('REMEMBER_ADD_SUCCESS', `Dataset: ${datasetName}, Component: ${componentName}, Status: ${addResult.status || 'OK'}`);
+          console.log(`[Cognee Cloud] Add succeeded:`, addResult.status || 'OK');
 
           // Trigger cognify to build knowledge graph
           try {
-            this.logCall('COGNIFY_START', `Dataset: ${datasetName}`);
             const cognifyRes = await fetch(`${apiUrl}/api/v1/cognify`, {
               method: 'POST',
               headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
@@ -116,19 +99,19 @@ export class CogneeClient {
             });
             if (cognifyRes.ok) {
               const cognifyResult = await cognifyRes.json();
-              this.logCall('COGNIFY_SUCCESS', `Dataset: ${datasetName}, Status: ${cognifyResult.status || 'OK'}`);
+              console.log(`[Cognee Cloud] Cognify triggered:`, cognifyResult.status || 'OK');
             } else {
-              this.logCall('COGNIFY_FAILED', `Dataset: ${datasetName}, Status: ${cognifyRes.status}, Error: ${await cognifyRes.text()}`);
+              console.warn(`[Cognee Cloud] Cognify response ${cognifyRes.status}:`, await cognifyRes.text());
             }
-          } catch (cognifyErr: any) {
-            this.logCall('COGNIFY_ERROR', `Dataset: ${datasetName}, Error: ${cognifyErr.message || cognifyErr}`);
+          } catch (cognifyErr) {
+            console.warn('[Cognee Cloud] Cognify call failed (non-blocking):', cognifyErr);
           }
         } else {
           const errText = await addRes.text();
-          this.logCall('REMEMBER_ADD_FAILED', `Dataset: ${datasetName}, Status: ${addRes.status}, Error: ${errText}`);
+          console.warn(`[Cognee Cloud] Add failed (${addRes.status}):`, errText);
         }
-      } catch (err: any) {
-        this.logCall('REMEMBER_ERROR', `Dataset: ${datasetName}, Component: ${componentName}, Error: ${err.message || err}`);
+      } catch (err) {
+        console.warn('[Cognee Cloud] Upload failed (falling back to embedded store):', err);
       }
     }
 
@@ -187,13 +170,11 @@ export class CogneeClient {
       memoryGraphStore.set(dataset, new Map());
     }
 
-    const datasetName = toUuid(dataset);
-
     // === COGNEE CLOUD SEARCH ===
     const apiUrl = this.getApiUrl();
     if (apiUrl && process.env.COGNEE_API_KEY && query) {
       try {
-        this.logCall('RECALL_START', `Dataset: ${datasetName} (raw: ${dataset}), Query: "${query}", Session: ${sessionId}`);
+        const datasetName = dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
         const searchRes = await fetch(`${apiUrl}/api/v1/search`, {
           method: 'POST',
           headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
@@ -208,16 +189,12 @@ export class CogneeClient {
         if (searchRes.ok) {
           const results = await searchRes.json();
           if (Array.isArray(results) && results.length > 0) {
-            this.logCall('RECALL_SUCCESS', `Dataset: ${datasetName}, Query: "${query}", Returned ${results.length} chunks`);
+            console.log(`[Cognee Cloud] Search returned ${results.length} chunks for "${query}" (session: ${sessionId})`);
             return results;
-          } else {
-            this.logCall('RECALL_EMPTY', `Dataset: ${datasetName}, Query: "${query}", Returned 0 chunks`);
           }
-        } else {
-          this.logCall('RECALL_FAILED', `Dataset: ${datasetName}, Status: ${searchRes.status}, Error: ${await searchRes.text()}`);
         }
-      } catch (err: any) {
-        this.logCall('RECALL_ERROR', `Dataset: ${datasetName}, Query: "${query}", Error: ${err.message || err}`);
+      } catch (err) {
+        console.warn('[Cognee Cloud] Search failed, using local graph store');
       }
     }
 
@@ -265,9 +242,9 @@ export class CogneeClient {
   public async improve(params: { dataset: string }): Promise<any> {
     const apiUrl = this.getApiUrl();
     if (apiUrl && process.env.COGNEE_API_KEY) {
-      const datasetName = toUuid(params.dataset);
       try {
-        this.logCall('IMPROVE_START', `Dataset: ${datasetName} (raw: ${params.dataset})`);
+        const datasetName = params.dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
+        console.log(`[Cognee Cloud] Improving dataset: ${datasetName}...`);
         const improveRes = await fetch(`${apiUrl}/api/v1/improve`, {
           method: 'POST',
           headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
@@ -279,50 +256,15 @@ export class CogneeClient {
 
         if (improveRes.ok) {
           const improveResult = await improveRes.json();
-          this.logCall('IMPROVE_SUCCESS', `Dataset: ${datasetName}`);
+          console.log(`[Cognee Cloud] Improve succeeded for ${datasetName}:`, improveResult);
           return improveResult;
         } else {
-          this.logCall('IMPROVE_FAILED', `Dataset: ${datasetName}, Status: ${improveRes.status}, Error: ${await improveRes.text()}`);
+          console.warn(`[Cognee Cloud] Improve failed (${improveRes.status}):`, await improveRes.text());
         }
-      } catch (err: any) {
-        this.logCall('IMPROVE_ERROR', `Dataset: ${datasetName}, Error: ${err.message || err}`);
+      } catch (err) {
+        console.warn(`[Cognee Cloud] Improve call failed:`, err);
       }
     }
-  }
-
-  /**
-   * Forget: Deletes a dataset on Cognee Cloud and clears local memory store.
-   */
-  public async forget(params: { dataset: string }): Promise<any> {
-    const { dataset } = params;
-    const datasetName = toUuid(dataset);
-
-    // Clear local graph store
-    if (memoryGraphStore.has(dataset)) {
-      memoryGraphStore.delete(dataset);
-    }
-
-    // === COGNEE CLOUD: Delete dataset via API ===
-    const apiUrl = this.getApiUrl();
-    if (apiUrl && process.env.COGNEE_API_KEY) {
-      try {
-        this.logCall('FORGET_START', `Dataset: ${datasetName} (raw: ${dataset})`);
-        const deleteRes = await fetch(`${apiUrl}/api/v1/datasets/${datasetName}`, {
-          method: 'DELETE',
-          headers: this.getHeaders(),
-        });
-        
-        if (deleteRes.ok) {
-          this.logCall('FORGET_SUCCESS', `Dataset: ${datasetName}`);
-          return { success: true };
-        } else {
-          this.logCall('FORGET_FAILED', `Dataset: ${datasetName}, Status: ${deleteRes.status}, Error: ${await deleteRes.text()}`);
-        }
-      } catch (err: any) {
-        this.logCall('FORGET_ERROR', `Dataset: ${datasetName}, Error: ${err.message || err}`);
-      }
-    }
-    return { success: false };
   }
 }
 

@@ -84,37 +84,25 @@ router.post('/:projectId/ingest', upload.single('file'), async (req, res, next) 
       console.warn('[AI Ingest] Improve call failed (non-blocking):', e);
     }
 
-    const greetingText = `Datasheet **${componentName || req.file?.originalname || 'Document'}** ingested. How would you like to proceed?`;
-    let session;
-    if (project.chatHistory && project.chatHistory.length > 0) {
-      session = project.chatHistory[project.chatHistory.length - 1];
-      session.chats.push({
-        role: 'assistant',
-        text: greetingText,
-        timestamp: new Date()
-      });
-      await project.save();
-    } else {
-      const newSessionId = new Types.ObjectId();
-      project.chatHistory = [{
-        _id: newSessionId,
-        title: 'Main Conversation',
-        chats: [
-          {
-            role: 'assistant',
-            text: 'Hello! I am your **AI Hardware Architect**. Tell me what project or circuit goal you want to build!',
-            timestamp: new Date()
-          },
-          {
-            role: 'assistant',
-            text: greetingText,
-            timestamp: new Date()
-          }
-        ]
-      }];
-      await project.save();
-      session = project.chatHistory[0];
-    }
+    const cleanName = (componentName || req.file?.originalname || 'Datasheet').replace(/\.pdf$/i, '').replace(/_Datasheet|_Spec|_Specifications/i, '').trim();
+    const greetingText = `Datasheet **${cleanName}** ingested. I have created a dedicated, isolated chat context for **${cleanName}** so there is no confusion with previous datasheets. How would you like to proceed?`;
+    
+    const newSessionId = new Types.ObjectId();
+    const newSession = {
+      _id: newSessionId,
+      title: `${cleanName} Context`,
+      chats: [
+        {
+          role: 'assistant',
+          text: greetingText,
+          timestamp: new Date()
+        }
+      ]
+    };
+    if (!project.chatHistory) project.chatHistory = [];
+    project.chatHistory.push(newSession as any);
+    await project.save();
+    const session = project.chatHistory[project.chatHistory.length - 1];
 
     res.status(201).json({
       success: true,
@@ -218,7 +206,7 @@ router.post('/:projectId/chat/new', async (req, res, next) => {
     const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    let summaryContext = '';
+    let summaryContext = project.description;
     if (project.chatHistory && project.chatHistory.length > 0) {
       const lastSession = project.chatHistory[project.chatHistory.length - 1];
       if (lastSession.chats && lastSession.chats.length > 1) {
@@ -228,14 +216,13 @@ router.post('/:projectId/chat/new', async (req, res, next) => {
           .map(m => m.text)
           .join('; ');
         if (recentTopics) {
-          summaryContext = recentTopics;
-          project.priorDiscussionContext = summaryContext.slice(0, 500);
-          await project.save();
+          summaryContext = `${project.description ? project.description + ' | ' : ''}Prior discussion: ${recentTopics}`;
+          project.description = summaryContext.slice(0, 350);
         }
       }
     }
 
-    const greeting = `Welcome to a new chat session for **${project.name}**! What specific circuit schematic or component integration would you like to work on next?`;
+    const greeting = `Welcome to a new chat session for **${project.name}**! Based on your context (${summaryContext ? summaryContext : 'getting started'}), what specific circuit schematic or component integration would you like to work on next?`;
 
     const newSessionId = new Types.ObjectId();
     project.chatHistory.push({
@@ -396,13 +383,17 @@ router.post('/:projectId/chat', async (req, res, next) => {
 
     try {
       const datasetName = sanitizeDatasetName(project.name);
-      console.log(`[AI Copilot] [${new Date().toISOString()}] Agent is actually fetching data from Cognee only - Recall Query: "${query}"`);
       const recalled = await cognee.recall({
         dataset: datasetName,
         query: query,
         sessionId: datasetName
       });
-      if (Array.isArray(recalled)) compArray.push(...recalled);
+      // Only push Cognee recall chunks that carry a valid componentName string
+      // (raw chunk objects from Cognee don't have componentName and would crash normalizedNodes)
+      if (Array.isArray(recalled)) {
+        const validChunks = recalled.filter(r => r && typeof r.componentName === 'string' && r.componentName);
+        compArray.push(...validChunks);
+      }
     } catch (e) {
       console.error('[AI] Cognee recall error:', e);
     }
@@ -413,7 +404,8 @@ router.post('/:projectId/chat', async (req, res, next) => {
     const agenticResult = await openaiService.generateAgenticChatAndCircuit(
       query,
       { name: project.name, description: project.description },
-      compArray
+      compArray,
+      project.canvas  // pass existing canvas so we can preserve node positions
     );
 
     if (isRequestClosed) return;
@@ -430,15 +422,45 @@ router.post('/:projectId/chat', async (req, res, next) => {
     activeSession.chats.push({ role: 'assistant', text: aiReply, timestamp: new Date() });
     await latestProject.save();
 
-    // Step C: Auto-Persist generated circuit into MongoDB if schematic was built
+    // Step C: Auto-Persist generated circuit into MongoDB if schematic was built.
+    // MERGE strategy: preserve existing node positions, only add new edges.
     if (agenticResult.type === 'circuit_generated' && agenticResult.nodes && agenticResult.edges) {
       const latestProjectForCanvas = await Project.findOne({ _id: projectId, userId: req.user!._id });
       if (latestProjectForCanvas) {
+        const existingNodes: any[] = latestProjectForCanvas.canvas?.nodes || [];
+        const existingEdges: any[] = latestProjectForCanvas.canvas?.edges || [];
+
+        // Build a position map from existing nodes keyed by label (component name)
+        const existingPosMap = new Map<string, { x: number; y: number }>();
+        existingNodes.forEach((n: any) => {
+          if (n?.data?.label) existingPosMap.set(n.data.label, n.position);
+          if (n?.id) existingPosMap.set(n.id, n.position);
+        });
+
+        // Merge: keep existing position if the node already exists on canvas
+        const mergedNodes = (agenticResult.nodes as any[]).map((newNode: any) => {
+          const existingPos =
+            existingPosMap.get(newNode?.data?.label) ||
+            existingPosMap.get(newNode?.id);
+          return existingPos ? { ...newNode, position: existingPos } : newNode;
+        });
+
+        // Merge edges: keep existing edges + add genuinely new ones (by id)
+        const existingEdgeIds = new Set(existingEdges.map((e: any) => e.id));
+        const newEdges = (agenticResult.edges as any[]).filter(
+          (e: any) => e?.id && !existingEdgeIds.has(e.id)
+        );
+        const mergedEdges = [...existingEdges, ...newEdges];
+
         latestProjectForCanvas.canvas = {
-          nodes: agenticResult.nodes as any,
-          edges: agenticResult.edges as any,
+          nodes: mergedNodes as any,
+          edges: mergedEdges as any,
         };
         await latestProjectForCanvas.save();
+
+        // Return merged result to the client so the canvas reflects the real state
+        (agenticResult as any).nodes = mergedNodes;
+        (agenticResult as any).edges = mergedEdges;
       }
     }
 
