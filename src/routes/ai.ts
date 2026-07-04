@@ -160,18 +160,25 @@ router.post('/:projectId/chat', async (req, res, next) => {
 
     // Save user query to persistent chat history
     if (!project.chatHistory) project.chatHistory = [];
-    project.chatHistory.push({ role: 'user', text: query, timestamp: new Date() });
+    // Prevent duplicate entries if the page is reloaded and the prompt is retried
+    const lastMsg = project.chatHistory[project.chatHistory.length - 1];
+    const isDuplicate = lastMsg && lastMsg.role === 'user' && lastMsg.text === query;
+    if (!isDuplicate) {
+      project.chatHistory.push({ role: 'user', text: query, timestamp: new Date() });
+      // store user query in db immediately
+      await project.save();
+    }
 
     // Step A: Context Retrieval from MongoDB Project Library & Cognee Graph
     const compArray: any[] = [];
     try {
       const dbComps = await Component.find({ userId: req.user!._id });
-      const matchedComps = dbComps.filter(c => 
+      const matchedComps = dbComps.filter(c =>
         (project.components && project.components.some(pComp => c.name.toLowerCase() === pComp.toLowerCase() || pComp.toLowerCase().includes(c.name.toLowerCase()))) ||
         (c.datasheetId && project.datasheets && project.datasheets.some(d => d.toString() === c.datasheetId?.toString()))
       );
       const effectiveComps = matchedComps.length > 0 ? matchedComps : ((project.components && project.components.length > 0) ? dbComps : []);
-      
+
       for (const c of effectiveComps) {
         compArray.push({
           componentName: c.name,
@@ -194,13 +201,13 @@ router.post('/:projectId/chat', async (req, res, next) => {
     try {
       const recalled = await cognee.recall({ dataset: projectId });
       if (Array.isArray(recalled)) compArray.push(...recalled);
-    } catch {}
+    } catch { }
     if (project.datasheets && project.datasheets.length > 0) {
       for (const dsId of project.datasheets) {
         try {
           const recalledDs = await cognee.recall({ dataset: dsId.toString() });
           if (Array.isArray(recalledDs)) compArray.push(...recalledDs);
-        } catch {}
+        } catch { }
       }
     }
 
@@ -212,17 +219,27 @@ router.post('/:projectId/chat', async (req, res, next) => {
     );
 
     const aiReply = agenticResult.message || (agenticResult as any).reply || 'Processed request.';
-    project.chatHistory.push({ role: 'assistant', text: aiReply, timestamp: new Date() });
+
+    const latestProject = await Project.findOne({ _id: projectId, userId: req.user!._id });
+    if (!latestProject) {
+      return res.status(404).json({ error: 'Project not found' });
+    }
+
+    if (!latestProject.chatHistory)
+      latestProject.chatHistory = [];
+
+
+    latestProject.chatHistory.push({ role: 'assistant', text: aiReply, timestamp: new Date() });
 
     // Step C: Auto-Persist generated circuit into MongoDB if schematic was built
     if (agenticResult.type === 'circuit_generated' && agenticResult.nodes && agenticResult.edges) {
-      project.canvas = {
+      latestProject.canvas = {
         nodes: agenticResult.nodes as any,
         edges: agenticResult.edges as any,
       };
     }
 
-    await project.save();
+    await latestProject.save();
 
     // Step D: Return structured payload for React Flow / Svelte Flow rendering
     res.json(agenticResult);

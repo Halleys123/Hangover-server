@@ -1,4 +1,8 @@
-import 'dotenv/config';
+// import 'dotenv/config';
+// to ensure that the variables in current env file 
+// override the existing env variable values
+import dotenv from 'dotenv';
+dotenv.config({ override: true });
 import express from 'express';
 import cors from 'cors';
 import mongoose from 'mongoose';

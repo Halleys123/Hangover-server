@@ -4,12 +4,12 @@ import { derivePins } from '../utils/derivePins.js';
 export class OpenAIService {
   private getClient(): OpenAI | null {
     const apiKey = process.env.OPENAI_API_KEY || process.env.LLM_API_KEY || 'dummy-key-for-local-providers';
-    
+
     // If no explicit API key is provided and no local base URL is set, return null
     if (!process.env.OPENAI_API_KEY && !process.env.LLM_API_KEY && !process.env.OPENAI_BASE_URL && !process.env.LLM_BASE_URL) {
       return null;
     }
-    
+
     return new OpenAI({
       apiKey,
       baseURL: process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || undefined,
@@ -131,7 +131,8 @@ export class OpenAIService {
 
       // Semantic Schematic Assembly: Derive accurate left/right headers for each component
       const nodes = cogneeComponents.map((c, i) => {
-        const derived = derivePins(c.componentName, null);
+        const specs = c.specs;
+        const derived = derivePins(c.componentName, specs);
         return {
           id: `node-${i + 1}`,
           type: 'hardware',
@@ -214,8 +215,14 @@ You MUST return strict JSON in exactly this format:
       // Semantic Normalization: Ensure AI-generated React Flow nodes strictly use 'hardware' node type
       // and physical pin layouts (preventing bogus 3rd pins on coolers/fans)
       const normalizedNodes = Array.isArray(parsed.nodes) ? parsed.nodes.map((node: any, idx: number) => {
-        const compName = node?.data?.label || `Node ${idx + 1}`;
-        const derived = derivePins(compName, null);
+        const compName = node?.data?.label || `Node ${idx + 1}`; const matchedComp = cogneeComponents.find(c =>
+          c.componentName.toLowerCase() === compName.toLowerCase() ||
+          compName.toLowerCase().includes(c.componentName.toLowerCase()) ||
+          c.componentName.toLowerCase().includes(compName.toLowerCase())
+        );
+        const specs = matchedComp ? (matchedComp.specs || matchedComp.cogneeConfig) : null;
+
+        const derived = derivePins(compName, specs);
         return {
           ...node,
           id: node?.id || `node-${idx + 1}`,
