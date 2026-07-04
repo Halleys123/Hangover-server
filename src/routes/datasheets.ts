@@ -9,6 +9,7 @@ import { Component } from '../models/Component.js';
 import { Project } from '../models/Project.js';
 import { pdfQueue } from '../services/pdfQueue.js';
 import { refineDatasheetSpecs } from '../services/cognee.js';
+import { cognee } from '../services/cogneeClient.js';
 
 const UPLOAD_DIR = path.resolve('uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -237,6 +238,13 @@ router.delete('/:id', async (req, res, next) => {
       } else if (fs.existsSync(sheet.filePath)) {
         try { fs.unlinkSync(sheet.filePath); } catch (err) { console.error('Failed to unlink raw path:', err); }
       }
+    }
+
+    // Forget dataset from Cognee Cloud
+    try {
+      await cognee.forget({ dataset: sheet._id.toString() });
+    } catch (e) {
+      console.error('[Datasheets] Failed to trigger Cognee forget:', e);
     }
 
     // Remove any components auto-created for or linked exclusively to this datasheet

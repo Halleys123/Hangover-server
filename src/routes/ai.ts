@@ -218,7 +218,7 @@ router.post('/:projectId/chat/new', async (req, res, next) => {
     const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
     if (!project) return res.status(404).json({ error: 'Project not found' });
 
-    let summaryContext = project.description;
+    let summaryContext = '';
     if (project.chatHistory && project.chatHistory.length > 0) {
       const lastSession = project.chatHistory[project.chatHistory.length - 1];
       if (lastSession.chats && lastSession.chats.length > 1) {
@@ -228,13 +228,14 @@ router.post('/:projectId/chat/new', async (req, res, next) => {
           .map(m => m.text)
           .join('; ');
         if (recentTopics) {
-          summaryContext = `${project.description ? project.description + ' | ' : ''}Prior discussion: ${recentTopics}`;
-          project.description = summaryContext.slice(0, 350);
+          summaryContext = recentTopics;
+          project.priorDiscussionContext = summaryContext.slice(0, 500);
+          await project.save();
         }
       }
     }
 
-    const greeting = `Welcome to a new chat session for **${project.name}**! Based on your context (${summaryContext ? summaryContext : 'getting started'}), what specific circuit schematic or component integration would you like to work on next?`;
+    const greeting = `Welcome to a new chat session for **${project.name}**! What specific circuit schematic or component integration would you like to work on next?`;
 
     const newSessionId = new Types.ObjectId();
     project.chatHistory.push({
@@ -395,6 +396,7 @@ router.post('/:projectId/chat', async (req, res, next) => {
 
     try {
       const datasetName = sanitizeDatasetName(project.name);
+      console.log(`[AI Copilot] [${new Date().toISOString()}] Agent is actually fetching data from Cognee only - Recall Query: "${query}"`);
       const recalled = await cognee.recall({
         dataset: datasetName,
         query: query,

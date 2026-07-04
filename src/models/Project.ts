@@ -25,6 +25,7 @@ export interface IProject extends Document {
   userId: Types.ObjectId;
   name: string;
   description: string;
+  priorDiscussionContext?: string;
   status: 'in-progress' | 'completed';
   date: string;
   components: string[];
@@ -65,6 +66,7 @@ const ProjectSchema = new Schema<IProject>(
     },
     name: { type: String, required: true },
     description: { type: String, default: '' },
+    priorDiscussionContext: { type: String, default: '' },
     status: {
       type: String,
       enum: ['in-progress', 'completed'],

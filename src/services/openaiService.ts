@@ -211,38 +211,157 @@ You MUST return strict JSON in exactly this format:
         temperature: 0.2
       });
 
-      const parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
-
-      // Semantic Normalization: Ensure AI-generated React Flow nodes strictly use 'hardware' node type
-      // and physical pin layouts (preventing bogus 3rd pins on coolers/fans)
-      const normalizedNodes = Array.isArray(parsed.nodes) ? parsed.nodes.map((node: any, idx: number) => {
-        const compName = node?.data?.label || `Node ${idx + 1}`; const matchedComp = cogneeComponents.find(c =>
-          c.componentName.toLowerCase() === compName.toLowerCase() ||
-          compName.toLowerCase().includes(c.componentName.toLowerCase()) ||
-          c.componentName.toLowerCase().includes(compName.toLowerCase())
-        );
-        const specs = matchedComp ? (matchedComp.specs || matchedComp.cogneeConfig) : null;
-
-        const derived = derivePins(compName, specs);
-        return {
-          ...node,
-          id: node?.id || `node-${idx + 1}`,
-          type: 'hardware',
-          data: {
-            ...node?.data,
-            label: compName,
-            subtitle: node?.data?.subtitle || 'Hardware Component',
-            theme: derived.theme,
-            pins: derived.pins
-          }
+      let parsed: any = {};
+      try {
+        parsed = JSON.parse(response.choices[0]?.message?.content || '{}');
+      } catch (err) {
+        console.warn('[AI] JSON parsing failed, attempting text healing.', err);
+        parsed = {
+          type: 'chat_response',
+          message: response.choices[0]?.message?.content || 'Processed request.'
         };
-      }) : [];
+      }
+
+      // Detect if user specifically requested wiring / schematic / connection
+      let finalType: 'chat_response' | 'circuit_generated' = parsed.type === 'circuit_generated' ? 'circuit_generated' : 'chat_response';
+      const isConnectQuery = /connect|wire|circuit|build|schematic|assemble/i.test(query) || 
+                            /auto-assemble|connect|schematic/i.test(parsed.message || '');
+      if (isConnectQuery && cogneeComponents.length >= 2) {
+        finalType = 'circuit_generated';
+      }
+
+      // Build normalized nodes
+      let normalizedNodes = Array.isArray(parsed.nodes) && parsed.nodes.length > 0
+        ? parsed.nodes.map((node: any, idx: number) => {
+            const compName = node?.data?.label || `Node ${idx + 1}`;
+            const matchedComp = cogneeComponents.find(c =>
+              c.componentName.toLowerCase() === compName.toLowerCase() ||
+              compName.toLowerCase().includes(c.componentName.toLowerCase()) ||
+              c.componentName.toLowerCase().includes(compName.toLowerCase())
+            );
+            const specs = matchedComp ? (matchedComp.specs || matchedComp.cogneeConfig) : null;
+            const derived = derivePins(compName, specs);
+            return {
+              ...node,
+              id: node?.id || `node-${idx + 1}`,
+              type: 'hardware',
+              data: {
+                ...node?.data,
+                label: compName,
+                subtitle: node?.data?.subtitle || 'Hardware Component',
+                theme: derived.theme,
+                pins: derived.pins
+              }
+            };
+          })
+        : [];
+
+      // Fallback: If type is circuit_generated but nodes are empty, generate them from Cognee context
+      if (finalType === 'circuit_generated' && normalizedNodes.length === 0) {
+        normalizedNodes = cogneeComponents.map((c, i) => {
+          const specs = c.specs || c.cogneeConfig;
+          const derived = derivePins(c.componentName, specs);
+          return {
+            id: `node-${i + 1}`,
+            type: 'hardware',
+            position: { x: 150 + (i % 2) * 350, y: 100 + Math.floor(i / 2) * 220 },
+            data: {
+              label: c.componentName,
+              subtitle: c.description || 'Hardware Component',
+              theme: derived.theme,
+              pins: derived.pins
+            }
+          };
+        });
+      }
+
+      // Build edges
+      let edges = Array.isArray(parsed.edges) ? parsed.edges : [];
+
+      // Fallback: If type is circuit_generated but edges are empty, auto-wire power, ground, and signals
+      if (finalType === 'circuit_generated' && edges.length === 0 && normalizedNodes.length >= 2) {
+        const hostNode = normalizedNodes[0];
+        const hostPins = [
+          ...(hostNode.data.pins?.left || []),
+          ...(hostNode.data.pins?.right || [])
+        ];
+
+        for (let i = 1; i < normalizedNodes.length; i++) {
+          const peripheralNode = normalizedNodes[i];
+          const periPins = [
+            ...(peripheralNode.data.pins?.left || []),
+            ...(peripheralNode.data.pins?.right || [])
+          ];
+          
+          // Match Power Pins (VCC, 3.3V, 5V)
+          const hostPowerPin = hostPins.find((p: any) => 
+            /3\.3v|5v|vcc|vdd|power/i.test(p.label || p.id || '')
+          );
+          const periPowerPin = periPins.find((p: any) => 
+            /vcc|vdd|power|3\.3v|5v|v\+/i.test(p.label || p.id || '')
+          );
+          
+          if (hostPowerPin && periPowerPin) {
+            edges.push({
+              id: `edge-power-${i}`,
+              source: hostNode.id,
+              sourceHandle: hostPowerPin.id,
+              target: peripheralNode.id,
+              targetHandle: periPowerPin.id,
+              label: `${hostPowerPin.label} -> ${periPowerPin.label}`,
+              animated: true,
+              style: { stroke: '#10b981', strokeWidth: 2 }
+            });
+          }
+
+          // Match Ground Pins (GND, Ground)
+          const hostGndPin = hostPins.find((p: any) => 
+            /gnd|ground/i.test(p.label || p.id || '')
+          );
+          const periGndPin = periPins.find((p: any) => 
+            /gnd|ground/i.test(p.label || p.id || '')
+          );
+          
+          if (hostGndPin && periGndPin) {
+            edges.push({
+              id: `edge-gnd-${i}`,
+              source: hostNode.id,
+              sourceHandle: hostGndPin.id,
+              target: peripheralNode.id,
+              targetHandle: periGndPin.id,
+              label: 'Ground',
+              style: { stroke: '#64748b', strokeWidth: 2 }
+            });
+          }
+
+          // Match Signal Pins (DATA, GPIO, I/O, SIG)
+          const hostIoPin = hostPins.find((p: any) => 
+            /data|gpio|io|sig|d5|d13|analog|digital/i.test(p.label || p.id || '')
+          );
+          const periIoPin = periPins.find((p: any) => 
+            /data|gpio|io|sig|in|out/i.test(p.label || p.id || '')
+          );
+          
+          if (hostIoPin && periIoPin) {
+            edges.push({
+              id: `edge-signal-${i}`,
+              source: hostNode.id,
+              sourceHandle: hostIoPin.id,
+              target: peripheralNode.id,
+              targetHandle: periIoPin.id,
+              label: 'Signal',
+              animated: true,
+              style: { stroke: '#3b82f6', strokeWidth: 2 }
+            });
+          }
+        }
+      }
 
       return {
-        type: parsed.type === 'circuit_generated' ? 'circuit_generated' : 'chat_response',
-        message: parsed.message || 'Processed project requirements.',
+        type: finalType,
+        message: parsed.message || response.choices[0]?.message?.content || 'Processed project requirements.',
         nodes: normalizedNodes,
-        edges: parsed.edges || []
+        edges
       };
     } catch (err: any) {
       console.error('OpenAI API error during agentic circuit assembly:', err);
