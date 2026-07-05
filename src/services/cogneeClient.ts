@@ -1,4 +1,7 @@
 import fs from 'fs';
+import { env } from '../config/env.js';
+import { logger } from '../utils/logger.js';
+import { ComponentGraphNode, type IComponentGraphNode } from '../models/ComponentGraphNode.js';
 
 export interface PinConstraint {
   pinNumber: string | number;
@@ -9,7 +12,7 @@ export interface PinConstraint {
   description?: string;
 }
 
-export interface ComponentGraphNode {
+export interface ComponentGraphNodeData {
   dataset: string;
   componentName: string;
   description?: string;
@@ -20,24 +23,21 @@ export interface ComponentGraphNode {
   updatedAt: Date;
 }
 
-// Internal memory store mapping dataset -> componentName -> ComponentGraphNode
-const memoryGraphStore: Map<string, Map<string, ComponentGraphNode>> = new Map();
-
 export class CogneeClient {
   private getApiUrl(): string | undefined {
-    return process.env.COGNEE_BASE_URL || process.env.COGNEE_API_URL;
+    return env.COGNEE_BASE_URL;
   }
 
   private getHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};
-    if (process.env.COGNEE_API_KEY) {
-      headers['X-API-KEY'] = process.env.COGNEE_API_KEY;
+    if (env.COGNEE_API_KEY) {
+      headers['X-API-KEY'] = env.COGNEE_API_KEY;
     }
     return headers;
   }
 
   /**
-   * Remember: Ingests datasheet text into Cognee Cloud (multipart/form-data) AND local graph store.
+   * Remember: Ingests datasheet text into Cognee Cloud (multipart/form-data) AND MongoDB local graph store.
    */
   public async remember(params: {
     dataset: string;
@@ -45,17 +45,12 @@ export class CogneeClient {
     componentName?: string;
     text?: string;
     extractedSpecs?: Record<string, any>;
-  }): Promise<ComponentGraphNode> {
+  }): Promise<ComponentGraphNodeData> {
     const { dataset, filePath, componentName = 'Unknown Component', extractedSpecs } = params;
-
-    // Ensure local graph store exists for this dataset
-    if (!memoryGraphStore.has(dataset)) {
-      memoryGraphStore.set(dataset, new Map());
-    }
 
     // === COGNEE CLOUD: Upload to real Cognee API ===
     const apiUrl = this.getApiUrl();
-    if (apiUrl && process.env.COGNEE_API_KEY) {
+    if (apiUrl && env.COGNEE_API_KEY) {
       try {
         const form = new FormData();
 
@@ -78,7 +73,7 @@ export class CogneeClient {
         const datasetName = dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
         form.append('datasetName', datasetName);
 
-        console.log(`[Cognee Cloud] Uploading to ${apiUrl}/api/v1/add (dataset: ${datasetName}, component: ${componentName})...`);
+        logger.info(`[Cognee Cloud] Uploading to ${apiUrl}/api/v1/add (dataset: ${datasetName}, component: ${componentName})...`);
 
         const addRes = await fetch(`${apiUrl}/api/v1/add`, {
           method: 'POST',
@@ -88,7 +83,7 @@ export class CogneeClient {
 
         if (addRes.ok) {
           const addResult = await addRes.json();
-          console.log(`[Cognee Cloud] Add succeeded:`, addResult.status || 'OK');
+          logger.info(`[Cognee Cloud] Add succeeded: ${addResult.status || 'OK'}`);
 
           // Trigger cognify to build knowledge graph
           try {
@@ -99,25 +94,27 @@ export class CogneeClient {
             });
             if (cognifyRes.ok) {
               const cognifyResult = await cognifyRes.json();
-              console.log(`[Cognee Cloud] Cognify triggered:`, cognifyResult.status || 'OK');
+              logger.info(`[Cognee Cloud] Cognify triggered: ${cognifyResult.status || 'OK'}`);
             } else {
-              console.warn(`[Cognee Cloud] Cognify response ${cognifyRes.status}:`, await cognifyRes.text());
+              logger.warn(`[Cognee Cloud] Cognify response ${cognifyRes.status}: ${await cognifyRes.text()}`);
             }
-          } catch (cognifyErr) {
-            console.warn('[Cognee Cloud] Cognify call failed (non-blocking):', cognifyErr);
+          } catch (cognifyErr: any) {
+            logger.warn('[Cognee Cloud] Cognify call failed (non-blocking):', cognifyErr.message || cognifyErr);
           }
         } else {
           const errText = await addRes.text();
-          console.warn(`[Cognee Cloud] Add failed (${addRes.status}):`, errText);
+          logger.warn(`[Cognee Cloud] Add failed (${addRes.status}): ${errText}`);
         }
-      } catch (err) {
-        console.warn('[Cognee Cloud] Upload failed (falling back to embedded store):', err);
+      } catch (err: any) {
+        logger.warn('[Cognee Cloud] Upload failed (falling back to embedded store):', err.message || err);
       }
     }
 
-    // === LOCAL GRAPH STORE: Always persist locally for immediate recall ===
-    const dsMap = memoryGraphStore.get(dataset)!;
-    let existingNode = dsMap.get(componentName) || dsMap.get(componentName.replace(/\s+/g, '_'));
+    // === LOCAL GRAPH STORE: Persist in MongoDB for immediate durability ===
+    let existingNode = await ComponentGraphNode.findOne({ dataset, componentName });
+    if (!existingNode) {
+      existingNode = await ComponentGraphNode.findOne({ dataset, componentName: componentName.replace(/\s+/g, '_') });
+    }
 
     const pins: Record<string, PinConstraint> = existingNode ? { ...existingNode.pins } : {};
 
@@ -138,7 +135,7 @@ export class CogneeClient {
       }
     }
 
-    const newNode: ComponentGraphNode = {
+    const nodeData = {
       dataset,
       componentName,
       description: existingNode?.description || `Extracted knowledge graph node for ${componentName}`,
@@ -146,15 +143,28 @@ export class CogneeClient {
       maxCurrentDrawmA: existingNode?.maxCurrentDrawmA || 50,
       pins,
       rawText: params.text || (filePath && fs.existsSync(filePath) ? `Ingested file: ${filePath}` : undefined),
-      updatedAt: new Date()
     };
 
-    dsMap.set(componentName, newNode);
-    return newNode;
+    const savedNode = await ComponentGraphNode.findOneAndUpdate(
+      { dataset, componentName },
+      { $set: nodeData },
+      { new: true, upsert: true }
+    );
+
+    return {
+      dataset: savedNode.dataset,
+      componentName: savedNode.componentName,
+      description: savedNode.description,
+      operatingVoltageRange: savedNode.operatingVoltageRange,
+      maxCurrentDrawmA: savedNode.maxCurrentDrawmA,
+      pins: savedNode.pins,
+      rawText: savedNode.rawText,
+      updatedAt: savedNode.updatedAt,
+    };
   }
 
   /**
-   * Recall: Retrieves from Cognee Cloud search first, falls back to local store.
+   * Recall: Retrieves from Cognee Cloud search first, falls back to local MongoDB store.
    */
   public async recall(params: {
     dataset: string;
@@ -165,14 +175,9 @@ export class CogneeClient {
   }): Promise<any> {
     const { dataset, query, componentName, pinNumber, sessionId } = params;
 
-    // Ensure local store
-    if (!memoryGraphStore.has(dataset)) {
-      memoryGraphStore.set(dataset, new Map());
-    }
-
     // === COGNEE CLOUD SEARCH ===
     const apiUrl = this.getApiUrl();
-    if (apiUrl && process.env.COGNEE_API_KEY && query) {
+    if (apiUrl && env.COGNEE_API_KEY && query) {
       try {
         const datasetName = dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
         const searchRes = await fetch(`${apiUrl}/api/v1/search`, {
@@ -189,23 +194,26 @@ export class CogneeClient {
         if (searchRes.ok) {
           const results = await searchRes.json();
           if (Array.isArray(results) && results.length > 0) {
-            console.log(`[Cognee Cloud] Search returned ${results.length} chunks for "${query}" (session: ${sessionId})`);
+            logger.info(`[Cognee Cloud] Search returned ${results.length} chunks for "${query}" (session: ${sessionId})`);
             return results;
           }
         }
-      } catch (err) {
-        console.warn('[Cognee Cloud] Search failed, using local graph store');
+      } catch (err: any) {
+        logger.warn('[Cognee Cloud] Search failed, using local graph store:', err.message || err);
       }
     }
 
-    // === LOCAL GRAPH STORE FALLBACK ===
-    const dsMap = memoryGraphStore.get(dataset)!;
-
+    // === LOCAL GRAPH STORE FALLBACK (MongoDB) ===
     // If requesting specific pin constraints for Layer 1 Data Retrieval
     if (componentName && pinNumber !== undefined) {
-      const comp = dsMap.get(componentName) || 
-                   Array.from(dsMap.values()).find(c => c.componentName.toLowerCase() === componentName.toLowerCase());
-      
+      let comp = await ComponentGraphNode.findOne({ dataset, componentName });
+      if (!comp) {
+        comp = await ComponentGraphNode.findOne({
+          dataset,
+          componentName: { $regex: new RegExp('^' + componentName + '$', 'i') }
+        });
+      }
+
       if (comp && comp.pins[String(pinNumber)]) {
         return comp.pins[String(pinNumber)];
       }
@@ -223,7 +231,7 @@ export class CogneeClient {
     }
 
     // If general query or recall for chat context
-    const allComponents = Array.from(dsMap.values());
+    const allComponents = await ComponentGraphNode.find({ dataset });
     if (query) {
       const lowerQ = query.toLowerCase();
       const matched = allComponents.filter(c => 
@@ -241,10 +249,10 @@ export class CogneeClient {
    */
   public async improve(params: { dataset: string }): Promise<any> {
     const apiUrl = this.getApiUrl();
-    if (apiUrl && process.env.COGNEE_API_KEY) {
+    if (apiUrl && env.COGNEE_API_KEY) {
       try {
         const datasetName = params.dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
-        console.log(`[Cognee Cloud] Improving dataset: ${datasetName}...`);
+        logger.info(`[Cognee Cloud] Improving dataset: ${datasetName}...`);
         const improveRes = await fetch(`${apiUrl}/api/v1/improve`, {
           method: 'POST',
           headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
@@ -256,13 +264,13 @@ export class CogneeClient {
 
         if (improveRes.ok) {
           const improveResult = await improveRes.json();
-          console.log(`[Cognee Cloud] Improve succeeded for ${datasetName}:`, improveResult);
+          logger.info(`[Cognee Cloud] Improve succeeded for ${datasetName}:`, improveResult);
           return improveResult;
         } else {
-          console.warn(`[Cognee Cloud] Improve failed (${improveRes.status}):`, await improveRes.text());
+          logger.warn(`[Cognee Cloud] Improve failed (${improveRes.status}): ${await improveRes.text()}`);
         }
-      } catch (err) {
-        console.warn(`[Cognee Cloud] Improve call failed:`, err);
+      } catch (err: any) {
+        logger.warn(`[Cognee Cloud] Improve call failed:`, err.message || err);
       }
     }
   }

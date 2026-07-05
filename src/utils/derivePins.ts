@@ -80,8 +80,11 @@ export function derivePins(name: string, cogneeConfig: Record<string, any> | nul
       const unassigned: SchematicPin[] = [];
 
       [...pwrPins, ...gndPins, ...anaPins, ...digPins, ...othPins].forEach(p => {
+        const idLower = p.id.toLowerCase();
         if (p.explicitSide === 'left') left.push(p);
         else if (p.explicitSide === 'right') right.push(p);
+        else if (idLower === 'p1' || idLower === 'pin1' || idLower.includes('terminal_1') || idLower.includes('terminal 1') || idLower === 'anode') left.push(p);
+        else if (idLower === 'p2' || idLower === 'pin2' || idLower.includes('terminal_2') || idLower.includes('terminal 2') || idLower === 'cathode') right.push(p);
         else unassigned.push(p);
       });
 
@@ -105,6 +108,45 @@ export function derivePins(name: string, cogneeConfig: Record<string, any> | nul
   }
 
   // 2. Derive deterministic accurate pin leads based on component classification & naming rules
+  const isBreadboard = combined.includes('breadboard') || combined.includes('prototyping') || combined.includes('chassis');
+  const isResistor = combined.includes('resistor') || combined.includes('res') || combined.includes('capacitor') || combined.includes('inductor');
+  const isBluetooth = combined.includes('bluetooth') || combined.includes('hc-05') || combined.includes('hc-06') || combined.includes('hc05') || combined.includes('hc06') || combined.includes('wireless') || combined.includes('wifi');
+
+  if (isBreadboard) {
+    return {
+      theme: 'gray',
+      pins: { left: [], right: [] }
+    };
+  }
+
+  if (isResistor) {
+    return {
+      theme: 'gray',
+      pins: {
+        left: [{ id: 'p1', label: 'Terminal 1', color: 'blue' }],
+        right: [{ id: 'p2', label: 'Terminal 2', color: 'blue' }]
+      }
+    };
+  }
+
+  if (isBluetooth) {
+    return {
+      theme: 'blue',
+      pins: {
+        left: [
+          { id: 'vcc', label: 'VCC', color: 'red' },
+          { id: 'gnd', label: 'GND', color: 'gray' },
+        ],
+        right: [
+          { id: 'txd', label: 'TXD', color: 'blue' },
+          { id: 'rxd', label: 'RXD', color: 'blue' },
+          { id: 'state', label: 'STATE', color: 'blue' },
+          { id: 'en', label: 'EN', color: 'blue' }
+        ]
+      }
+    };
+  }
+
   const is2WirePowerDevice =
     combined.includes('tec') ||
     combined.includes('peltier') ||

@@ -26,6 +26,23 @@ The backend API for **Hardware Prototyping Copilot**, built with Express, TypeSc
    - `PORT`: Server port (defaults to `3000`).
    - `CLIENT_ORIGIN`: Allowed CORS origin (defaults to client dev URL `http://localhost:5173`).
 
+### Hosted LLM Providers
+The server uses the OpenAI SDK against OpenAI-compatible chat-completion APIs. To use hosted inference instead of local Ollama, set one of these in `Hangover-server/.env`:
+
+```bash
+# OpenRouter free router
+AI_PROVIDER=openrouter
+OPENROUTER_API_KEY=sk-or-v1-your_openrouter_key
+OPENROUTER_MODEL=openrouter/free
+
+# NVIDIA NIM / NVIDIA API Catalog
+AI_PROVIDER=nvidia
+NVIDIA_API_KEY=nvapi-your_nvidia_key
+NVIDIA_MODEL=meta/llama-3.3-70b-instruct
+```
+
+For a specific OpenRouter free model, replace `OPENROUTER_MODEL` with that model slug. For NVIDIA, use the model slug shown on the model's NVIDIA Build page.
+
 ### Seeding the Database
 Pre-populate the database with the core catalog (microcontrollers, sensors) and sample projects:
 ```bash

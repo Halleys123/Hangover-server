@@ -1,8 +1,4 @@
-// import 'dotenv/config';
-// to ensure that the variables in current env file 
-// override the existing env variable values
-import dotenv from 'dotenv';
-dotenv.config({ override: true });
+import { env, validateConfig } from './config/env.js';
 import express from 'express';
 import cors from 'cors';
 import mongoose from 'mongoose';
@@ -14,16 +10,16 @@ import datasheetsRouter from './routes/datasheets.js';
 import chatRouter from './routes/chat.js';
 import validateRouter from './routes/validate.js';
 import aiRouter from './routes/ai.js';
-import { validateAndGetAIConfig } from './services/aiConfig.js';
+import { runStartupHealing } from './utils/startupCheck.js';
+import { logger } from './utils/logger.js';
 
 const app = express();
-const PORT = process.env.PORT ?? 3000;
-const MONGO_URI =
-  process.env.MONGODB_URI ?? 'mongodb://localhost:27017/hangover';
+const PORT = env.PORT;
+const MONGO_URI = env.MONGODB_URI;
 
 app.use(
   cors({
-    origin: process.env.CLIENT_ORIGIN ?? 'http://localhost:5173',
+    origin: env.CLIENT_ORIGIN,
     credentials: true,
   }),
 );
@@ -39,18 +35,24 @@ app.use('/api/validate', validateRouter);
 
 app.use(errorHandler);
 
-// Validate AI provider environment variables on startup
-validateAndGetAIConfig(true);
+// Validate environment configurations on boot
+validateConfig();
 
 mongoose
   .connect(MONGO_URI)
-  .then(() => {
-    console.log('Connected to MongoDB');
+  .then(async () => {
+    logger.info('Connected to MongoDB');
+    
+    // Execute database schema healing checks asynchronously after boot
+    runStartupHealing().catch(err => {
+      logger.error('Startup schema healing failed:', err);
+    });
+
     app.listen(PORT, () =>
-      console.log(`Server running on http://localhost:${PORT}`),
+      logger.info(`Server running on http://localhost:${PORT}`),
     );
   })
   .catch((err) => {
-    console.error('MongoDB connection failed:', err.message);
+    logger.error('MongoDB connection failed:', err.message);
     process.exit(1);
   });

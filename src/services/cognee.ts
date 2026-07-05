@@ -5,6 +5,8 @@ const pdfParse = require('pdf-parse');
 import { cognee } from './cogneeClient.js';
 import { openaiService } from './openaiService.js';
 import { Project } from '../models/Project.js';
+import { logger } from '../utils/logger.js';
+
 
 /* 
  * Semantic Comment 1:
@@ -146,6 +148,65 @@ export function normalizeExtractedSpecs(name: string, specs: any): any {
       ],
       digital: [],
       analog: []
+    };
+  } else if (nStr.includes('breadboard') || classStr.includes('breadboard') || nStr.includes('prototyping') || classStr.includes('prototyping')) {
+    specs["Component Classification"] = "Passive Prototyping / Breadboard";
+    specs["Electrical Limits"] = {
+      minOperatingVoltage: null,
+      maxOperatingVoltage: null,
+      nominalVoltage: null,
+      maxCurrentmA: null,
+      maxPowerDissipationW: null
+    };
+    specs.Pins = {
+      power: [],
+      ground: [],
+      digital: [],
+      analog: []
+    };
+  } else if (nStr.includes('resistor') || classStr.includes('resistor') || nStr.includes('res') || classStr.includes('res') || nStr.includes('capacitor') || classStr.includes('capacitor') || nStr.includes('inductor') || classStr.includes('inductor')) {
+    specs["Component Classification"] = "Passive Component / Resistor";
+    specs["Electrical Limits"] = {
+      minOperatingVoltage: null,
+      maxOperatingVoltage: null,
+      nominalVoltage: null,
+      maxCurrentmA: null,
+      maxPowerDissipationW: null
+    };
+    specs.Pins = {
+      power: [],
+      ground: [],
+      digital: [],
+      analog: [],
+      others: [
+        { id: "p1", name: "Terminal 1", type: "passive", side: "left" },
+        { id: "p2", name: "Terminal 2", type: "passive", side: "right" }
+      ]
+    };
+  } else if (nStr.includes('bluetooth') || classStr.includes('bluetooth') || nStr.includes('hc-05') || nStr.includes('hc-06') || nStr.includes('hc05') || nStr.includes('hc06') || nStr.includes('wireless') || classStr.includes('wireless') || nStr.includes('wifi') || classStr.includes('wifi')) {
+    specs["Component Classification"] = "Wireless Communication / Bluetooth Module";
+    if (!specs["Electrical Limits"] || typeof specs["Electrical Limits"] !== 'object') {
+      specs["Electrical Limits"] = {};
+    }
+    specs["Electrical Limits"].minOperatingVoltage = specs["Electrical Limits"].minOperatingVoltage || 3.6;
+    specs["Electrical Limits"].maxOperatingVoltage = specs["Electrical Limits"].maxOperatingVoltage || 6.0;
+    specs["Electrical Limits"].nominalVoltage = specs["Electrical Limits"].nominalVoltage || 5.0;
+    specs["Electrical Limits"].maxCurrentmA = specs["Electrical Limits"].maxCurrentmA || 50;
+
+    specs.Pins = {
+      power: [
+        { id: "VCC", name: "VCC (3.6-6V)", voltage: 5.0, type: "power", side: "left" },
+        { id: "GND", name: "GND", voltage: 0.0, type: "ground", side: "left" }
+      ],
+      digital: [
+        { id: "TXD", name: "UART TX", maxVoltageTolerance: 3.3, outputVoltage: 3.3, type: "bidirectional", side: "right" },
+        { id: "RXD", name: "UART RX", maxVoltageTolerance: 3.3, outputVoltage: 3.3, type: "bidirectional", side: "right" }
+      ],
+      analog: [],
+      others: [
+        { id: "STATE", name: "State Indicator", type: "digital_out", side: "right" },
+        { id: "EN", name: "Enable / Key Pin", type: "digital_in", side: "right" }
+      ]
     };
   }
 
@@ -626,12 +687,12 @@ export async function addDatasheetToProjectDataset(datasheet: any, projectId: st
       const dataBuffer = fs.readFileSync(datasheet.filePath);
       const pdfResult = await pdfParse(dataBuffer);
       rawText = pdfResult.text || '';
-    } catch (e) {
-      console.warn('[Cognee] Failed to parse PDF for project mapping:', e);
+    } catch (e: any) {
+      logger.warn('[Cognee] Failed to parse PDF for project mapping:', e.message || e);
     }
   }
 
-  console.log(`[Cognee] Mapping datasheet "${cleanName}" to project dataset "${datasetName}" (project: "${projectId}")...`);
+  logger.info(`[Cognee] Mapping datasheet "${cleanName}" to project dataset "${datasetName}" (project: "${projectId}")...`);
 
   // 1. Remember the text content
   await cognee.remember({
@@ -653,8 +714,8 @@ export async function addDatasheetToProjectDataset(datasheet: any, projectId: st
   // 3. Trigger improve
   try {
     await cognee.improve({ dataset: datasetName });
-  } catch (err) {
-    console.warn('[Cognee] Improve failed for project mapping:', err);
+  } catch (err: any) {
+    logger.warn('[Cognee] Improve failed for project mapping:', err.message || err);
   }
 }
 

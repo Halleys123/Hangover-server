@@ -2,6 +2,8 @@ import { Datasheet } from '../models/Datasheet.js';
 import { Component } from '../models/Component.js';
 import { indexDatasheet } from './cognee.js';
 import { derivePins } from '../utils/derivePins.js';
+import { logger } from '../utils/logger.js';
+import { componentController } from '../controllers/ComponentController.js';
 
 interface QueueJob {
   datasheetId: string;
@@ -35,9 +37,9 @@ class PDFQueueService {
         status: 'processing',
       });
 
-      console.log(`[PDFQueue] Starting real text extraction & LLM analysis for ${job.originalName}...`);
+      logger.info(`[PDFQueue] Starting real text extraction & LLM analysis for ${job.originalName}...`);
       const cogneeConfig = await indexDatasheet(job.filePath, job.originalName, job.datasheetId);
-      console.log(`[PDFQueue] Successfully extracted specs via AI Provider (${process.env.AI_PROVIDER || 'openrouter'}) / Cognee for ${job.originalName}:`, cogneeConfig);
+      logger.info(`[PDFQueue] Successfully extracted specs via AI Provider / Cognee for ${job.originalName}`);
 
       const sheet = await Datasheet.findByIdAndUpdate(job.datasheetId, {
         status: 'completed',
@@ -55,20 +57,29 @@ class PDFQueueService {
           const isCooler = lower.includes('tec') || lower.includes('peltier') || lower.includes('cooler') || lower.includes('fan') || lower.includes('heat sink');
           const isPower = lower.includes('power') || lower.includes('pmt') || lower.includes('converter') || lower.includes('adapter') || lower.includes('supply');
           const isMcu = lower.includes('arduino') || lower.includes('uno') || lower.includes('esp32') || lower.includes('mcu') || lower.includes('microcontroller') || lower.includes('stm32') || lower.includes('pic') || lower.includes('atmega') || lower.includes('rp2040');
+          const isBreadboard = lower.includes('breadboard') || lower.includes('prototyping') || lower.includes('chassis');
+          const isResistor = lower.includes('resistor') || lower.includes('res') || lower.includes('capacitor') || lower.includes('inductor');
+          const isBluetooth = lower.includes('bluetooth') || lower.includes('hc-05') || lower.includes('hc-06') || lower.includes('hc05') || lower.includes('hc06') || lower.includes('wireless') || lower.includes('wifi');
 
           let cat = 'actuator';
           if (isMcu) cat = 'microcontroller';
           else if (isSensor) cat = 'sensor';
           else if (isLed) cat = 'optoelectronics';
           else if (isCooler || isPower) cat = 'power';
+          else if (isBreadboard) cat = 'prototyping';
+          else if (isResistor) cat = 'passive';
+          else if (isBluetooth) cat = 'communication';
           else if ((cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('microcontroller')) cat = 'microcontroller';
           else if ((cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('sensor')) cat = 'sensor';
           else if ((cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('led') || (cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('diode')) cat = 'optoelectronics';
+          else if ((cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('breadboard')) cat = 'prototyping';
+          else if ((cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('resistor')) cat = 'passive';
+          else if ((cogneeConfig?.['Component Classification'] as string)?.toLowerCase()?.includes('bluetooth')) cat = 'communication';
           
-          // Derive accurate deterministic visual schematic pins (eliminating random SIG/DATA leads on 2-wire coolers/fans)
+          // Derive accurate deterministic visual schematic pins
           const derivedDiagram = derivePins(cleanName, cogneeConfig);
 
-          await Component.create({
+          const newComp = await Component.create({
             userId: sheet.userId,
             datasheetId: sheet._id,
             category: cat,
@@ -77,10 +88,13 @@ class PDFQueueService {
             diagram: derivedDiagram,
             cogneeConfig
           });
+
+          // Run persistent healing immediately during ingestion-time creation
+          await componentController.persistHealComponent(newComp);
         }
       }
     } catch (err: any) {
-      console.error(`Queue job failed for datasheet ${job.datasheetId}:`, err);
+      logger.error(`Queue job failed for datasheet ${job.datasheetId}:`, err.message || err);
       await Datasheet.findByIdAndUpdate(job.datasheetId, {
         status: 'failed',
         error: err.message || 'Extraction failed',

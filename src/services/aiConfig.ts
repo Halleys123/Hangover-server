@@ -1,11 +1,13 @@
-import dotenv from 'dotenv';
+import { env } from '../config/env.js';
+import { logger } from '../utils/logger.js';
 
-export type AIProviderType = 'openrouter' | 'openai' | 'ollama' | 'groq' | 'custom';
+export type AIProviderType = 'openrouter' | 'nvidia' | 'openai' | 'ollama' | 'groq' | 'custom';
 
 export interface AIClientConfig {
   provider: AIProviderType;
   apiKey?: string;
   baseURL?: string;
+  defaultHeaders?: Record<string, string>;
   model: string;
   isValid: boolean;
   missingVars: string[];
@@ -18,74 +20,81 @@ export interface AIClientConfig {
  * If required environment variables are missing, prints a prominent RED console error.
  */
 export function validateAndGetAIConfig(logErrors = true): AIClientConfig {
-  const rawProvider = (process.env.AI_PROVIDER || '').toLowerCase().trim() as AIProviderType;
+  const provider = env.AI_PROVIDER as AIProviderType;
   
-  // Auto-detect provider if not explicitly set in .env
-  let provider: AIProviderType = rawProvider;
-  if (!provider) {
-    if (process.env.OPENROUTER_API_KEY) provider = 'openrouter';
-    else if (process.env.OPENAI_API_KEY) provider = 'openai';
-    else if (process.env.GROQ_API_KEY) provider = 'groq';
-    else if (process.env.OLLAMA_BASE_URL || process.env.OLLAMA_MODEL) provider = 'ollama';
-    else provider = 'openrouter'; // Default to openrouter
-  }
-
   let apiKey: string | undefined;
   let baseURL: string | undefined;
+  let defaultHeaders: Record<string, string> | undefined;
   let model: string = 'gpt-4o';
   const missingVars: string[] = [];
 
   switch (provider) {
     case 'openrouter': {
-      apiKey = process.env.OPENROUTER_API_KEY || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY;
-      baseURL = process.env.OPENROUTER_BASE_URL || process.env.LLM_BASE_URL || 'https://openrouter.ai/api/v1';
-      model = process.env.OPENROUTER_MODEL || process.env.LLM_MODEL || 'anthropic/claude-haiku-4.5';
+      apiKey = env.OPENROUTER_API_KEY;
+      baseURL = env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+      model = env.OPENROUTER_MODEL || 'openrouter/free';
+      defaultHeaders = {};
+      if (process.env.OPENROUTER_SITE_URL) {
+        defaultHeaders['HTTP-Referer'] = process.env.OPENROUTER_SITE_URL;
+      }
+      if (process.env.OPENROUTER_APP_NAME) {
+        defaultHeaders['X-OpenRouter-Title'] = process.env.OPENROUTER_APP_NAME;
+      }
       if (!apiKey) {
         missingVars.push('OPENROUTER_API_KEY (or LLM_API_KEY / OPENAI_API_KEY)');
       }
       break;
     }
+    case 'nvidia': {
+      apiKey = env.NVIDIA_API_KEY;
+      baseURL = env.NVIDIA_BASE_URL || 'https://integrate.api.nvidia.com/v1';
+      model = env.NVIDIA_MODEL || 'meta/llama-3.3-70b-instruct';
+      if (!apiKey) {
+        missingVars.push('NVIDIA_API_KEY (or NIM_API_KEY / LLM_API_KEY)');
+      }
+      break;
+    }
     case 'openai': {
-      apiKey = process.env.OPENAI_API_KEY || process.env.LLM_API_KEY;
-      baseURL = process.env.OPENAI_BASE_URL || process.env.LLM_BASE_URL || undefined;
-      model = process.env.OPENAI_MODEL || process.env.LLM_MODEL || 'gpt-4o';
+      apiKey = env.OPENAI_API_KEY;
+      baseURL = env.OPENAI_BASE_URL || undefined;
+      model = env.OPENAI_MODEL || 'gpt-4o';
       if (!apiKey) {
         missingVars.push('OPENAI_API_KEY');
       }
       break;
     }
     case 'ollama': {
-      apiKey = process.env.OLLAMA_API_KEY || process.env.LLM_API_KEY || 'dummy-key-for-local-ollama';
-      baseURL = process.env.OLLAMA_BASE_URL || process.env.LLM_BASE_URL || 'http://localhost:11434/v1';
-      model = process.env.OLLAMA_MODEL || process.env.LLM_MODEL || 'llama3';
-      if (!process.env.OLLAMA_MODEL && !process.env.LLM_MODEL) {
+      apiKey = env.OLLAMA_API_KEY || 'dummy-key-for-local-ollama';
+      baseURL = env.OLLAMA_BASE_URL || 'http://localhost:11434/v1';
+      model = env.OLLAMA_MODEL || 'llama3';
+      if (!env.OLLAMA_MODEL && !env.LLM_MODEL) {
         missingVars.push('OLLAMA_MODEL (or LLM_MODEL, e.g. llama3:8b)');
       }
       break;
     }
     case 'groq': {
-      apiKey = process.env.GROQ_API_KEY || process.env.LLM_API_KEY || process.env.OPENAI_API_KEY;
-      baseURL = process.env.GROQ_BASE_URL || process.env.LLM_BASE_URL || 'https://api.groq.com/openai/v1';
-      model = process.env.GROQ_MODEL || process.env.LLM_MODEL || 'llama-3.3-70b-versatile';
+      apiKey = env.GROQ_API_KEY;
+      baseURL = env.GROQ_BASE_URL || 'https://api.groq.com/openai/v1';
+      model = env.GROQ_MODEL || 'llama-3.3-70b-versatile';
       if (!apiKey) {
         missingVars.push('GROQ_API_KEY (or LLM_API_KEY / OPENAI_API_KEY)');
       }
       break;
     }
     case 'custom': {
-      apiKey = process.env.LLM_API_KEY || process.env.OPENAI_API_KEY || 'dummy-key-for-custom-endpoint';
-      baseURL = process.env.LLM_BASE_URL || process.env.OPENAI_BASE_URL;
-      model = process.env.LLM_MODEL || process.env.OPENAI_MODEL || 'custom-model';
+      apiKey = env.LLM_API_KEY || env.OPENAI_API_KEY || 'dummy-key-for-custom-endpoint';
+      baseURL = env.LLM_BASE_URL || env.OPENAI_BASE_URL;
+      model = env.LLM_MODEL || env.OPENAI_MODEL || 'custom-model';
       if (!baseURL) {
         missingVars.push('LLM_BASE_URL (or OPENAI_BASE_URL)');
       }
-      if (!process.env.LLM_API_KEY && !process.env.OPENAI_API_KEY) {
+      if (!env.LLM_API_KEY && !env.OPENAI_API_KEY) {
         missingVars.push('LLM_API_KEY (or OPENAI_API_KEY)');
       }
       break;
     }
     default: {
-      missingVars.push(`Unknown AI_PROVIDER '${provider}'. Valid options: openrouter, openai, ollama, groq, custom`);
+      missingVars.push(`Unknown AI_PROVIDER '${provider}'. Valid options: openrouter, nvidia, openai, ollama, groq, custom`);
       break;
     }
   }
@@ -93,25 +102,21 @@ export function validateAndGetAIConfig(logErrors = true): AIClientConfig {
   const isValid = missingVars.length === 0;
 
   if (!isValid && logErrors) {
-    const red = '\x1b[31m';
-    const boldRed = '\x1b[1;31m';
-    const yellow = '\x1b[33m';
-    const reset = '\x1b[0m';
-    
-    console.error(`\n${red}=================================================================${reset}`);
-    console.error(`${boldRed}[AI CONFIGURATION ERROR] Missing Required Environment Variables!${reset}`);
-    console.error(`${red}AI_PROVIDER is set to '${yellow}${provider}${red}', but the following required variables are missing:${reset}`);
+    logger.error(`\n=================================================================`);
+    logger.error(`[AI CONFIGURATION ERROR] Missing Required Environment Variables!`);
+    logger.error(`AI_PROVIDER is set to '${provider}', but the following required variables are missing:`);
     missingVars.forEach(v => {
-      console.error(`${boldRed}  -> ${v}${reset}`);
+      logger.error(`  -> ${v}`);
     });
-    console.error(`${red}Please check your server/.env file and add the required variables.${reset}`);
-    console.error(`${red}=================================================================\n${reset}`);
+    logger.error(`Please check your server/.env file and add the required variables.`);
+    logger.error(`=================================================================\n`);
   }
 
   return {
     provider,
     apiKey,
     baseURL,
+    defaultHeaders,
     model,
     isValid,
     missingVars

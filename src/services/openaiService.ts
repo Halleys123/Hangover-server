@@ -1,6 +1,8 @@
+
 import OpenAI from 'openai';
 import { derivePins } from '../utils/derivePins.js';
 import { validateAndGetAIConfig } from './aiConfig.js';
+import { logger } from '../utils/logger.js';
 
 /**
  * Strips optional markdown code fences (```json ... ``` or ``` ... ```) and
@@ -43,6 +45,7 @@ export class OpenAIService {
     return new OpenAI({
       apiKey: config.apiKey || 'dummy-key-for-local-providers',
       baseURL: config.baseURL || undefined,
+      defaultHeaders: config.defaultHeaders,
       timeout: 10 * 60 * 1000, // 10 minutes timeout for slow local LLM engines
     });
   }
@@ -60,12 +63,17 @@ export class OpenAIService {
     const contextString = JSON.stringify(graphContext, null, 2);
 
     if (!openai) {
-      return `[Grounded Cognee Recall Summary]\nBased on the extracted hardware knowledge graph:\n${contextString}\n\n(Note: Set OPENAI_API_KEY in server/.env for natural language synthesis).`;
+      return `[Grounded Cognee Recall Summary]\nBased on the extracted hardware knowledge graph:\n${contextString}\n\n(Note: Set AI_PROVIDER plus the matching API key/model in server/.env for natural language synthesis).`;
     }
+
+    const model = this.getModel();
+    const startTime = Date.now();
+    console.log(`\n[LLM Chat Request] Starting... Model: "${model}"`);
+    console.log(`[LLM Chat Request] Query: "${query.substring(0, 100)}${query.length > 100 ? '...' : ''}"`);
 
     try {
       const response = await openai.chat.completions.create({
-        model: this.getModel(),
+        model: model,
         max_tokens: 1500,
         messages: [
           {
@@ -80,9 +88,12 @@ export class OpenAIService {
         temperature: 0.2
       });
 
+      const duration = Date.now() - startTime;
+      console.log(`[LLM Chat Response] Completed in ${duration}ms\n`);
       return response.choices[0]?.message?.content || 'No response generated.';
     } catch (err: any) {
-      console.error('OpenAI API error during chat synthesis:', err);
+      const duration = Date.now() - startTime;
+      console.error(`[LLM Chat Error] Failed after ${duration}ms:`, err.message || err);
       throw err;
     }
   }
@@ -91,7 +102,7 @@ export class OpenAIService {
    * Dedicated JSON Extraction & Validation Route:
    * Used by Cognee PDF datasheet ingestion, refinement, and circuit validation.
    * Sends a clean system prompt without restricting the LLM to an empty or minimal context string,
-   * allowing models (like OpenRouter Claude 3.5 Sonnet, GPT-4o, Groq, or Llama 3) to reliably extract valid JSON.
+   * allowing models (like OpenRouter, NVIDIA NIM, GPT-4o, Groq, or Llama 3) to reliably extract valid JSON.
    */
   public async generateJSONResponse(systemPrompt: string, userPrompt: string): Promise<string> {
     const openai = this.getClient();
@@ -99,10 +110,16 @@ export class OpenAIService {
       throw new Error('AI client not initialized or missing API key.');
     }
 
+    const model = this.getModel();
+    const startTime = Date.now();
+    console.log(`\n[LLM JSON Request] Starting... Model: "${model}"`);
+    console.log(`[LLM JSON Request] Prompt details: "${userPrompt.substring(0, 150)}..."`);
+
     try {
       const response = await openai.chat.completions.create({
-        model: this.getModel(),
+        model: model,
         max_tokens: 1500,
+        response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }
@@ -110,9 +127,14 @@ export class OpenAIService {
         temperature: 0.1
       });
 
+      const duration = Date.now() - startTime;
+      console.log(`[LLM JSON Response] Completed in ${duration}ms\n`);
+      // Log the generated response 
+      console.log(`[LLM JSON Response] The JSON Response Generated is: ${response}\n`);
       return response.choices[0]?.message?.content || '{}';
     } catch (err: any) {
-      console.error('OpenAI API error during JSON extraction:', err);
+      const duration = Date.now() - startTime;
+      console.error(`[LLM JSON Error] Failed after ${duration}ms:`, err.message || err);
       throw err;
     }
   }
@@ -141,6 +163,7 @@ export class OpenAIService {
       const response = await openai.chat.completions.create({
         model: this.getModel(),
         max_tokens: 800,
+        response_format: { type: 'json_object' },
         messages: [
           {
             role: 'system',
@@ -241,6 +264,11 @@ export class OpenAIService {
       };
     }
 
+    const model = this.getModel();
+    const startTime = Date.now();
+    console.log(`\n[LLM Circuit Request] Starting... Model: "${model}"`);
+    console.log(`[LLM Circuit Request] Query: "${query}"`);
+
     try {
       const hasComponents = cogneeComponents.length > 0;
       // Build an explicit component list with actual pin IDs so the AI uses correct sourceHandle/targetHandle values
@@ -274,6 +302,13 @@ State 2 - MISSING PARTS: Some components not in context. Output type=chat_respon
 State 3 - INCOMPATIBILITY: Voltage/protocol mismatch detected. Output type=chat_response explaining the hazard.
 State 4 - GENERATE CIRCUIT: ALL components are in context AND user asks to connect/wire/build. Output type=circuit_generated with full nodes and edges arrays.
 
+TRANSITION RULES AND CONSTRAINTS:
+1. If the user asks to connect, wire, build, or assemble the circuit, and all necessary components are available, you MUST choose type="circuit_generated". Do NOT choose type="chat_response" to simply declare the goal met or requirements satisfied.
+2. When type="circuit_generated", you MUST generate a non-empty, complete "edges" array representing all the physical power, ground, and signal wires connecting the components. Outputting an empty or incomplete edges list is a critical failure.
+3. Every node in the nodes list must represent a real component from the available list.
+4. Passive components like resistors should have their terminals (e.g. p1, p2) wired in series/parallel as appropriate for signal flow.
+5. Structural components like breadboards have no active schematic pins; do not wire signals to them.
+
 ${hasComponents ? `AVAILABLE COMPONENTS (use these EXACT componentName values as node data.label values — do NOT invent new names):
 ${componentList}
 ${existingCanvasInfo}
@@ -290,8 +325,9 @@ Edge format: {"id":"edge-1","source":"node-1","sourceHandle":"<pin id from list>
 Remember: respond ONLY with a JSON object. No text before or after the JSON.`;
 
       const response = await openai.chat.completions.create({
-        model: this.getModel(),
+        model: model,
         max_tokens: 2000,
+        response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: systemPrompt },
           {
@@ -302,6 +338,8 @@ Remember: respond ONLY with a JSON object. No text before or after the JSON.`;
         temperature: 0.2
       });
 
+      const duration = Date.now() - startTime;
+      console.log(`[LLM Circuit Response] Completed in ${duration}ms\n`);
       const rawContent = response.choices[0]?.message?.content || '{}';
       const parsed = safeParseJSON(rawContent, rawContent);
 
@@ -357,7 +395,8 @@ Remember: respond ONLY with a JSON object. No text before or after the JSON.`;
         edges: parsed.edges || []
       };
     } catch (err: any) {
-      console.error('OpenAI API error during agentic circuit assembly:', err);
+      const duration = Date.now() - startTime;
+      console.error(`[LLM Circuit Error] Failed after ${duration}ms:`, err.message || err);
       return {
         type: 'chat_response',
         message: `Error connecting to AI circuit architect: ${err.message}`
