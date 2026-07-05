@@ -13,6 +13,7 @@ router.put('/:id/canvas', projectController.updateProjectCanvas.bind(projectCont
 router.post('/:id/components', projectController.addProjectComponent.bind(projectController));
 router.delete('/:id/components/:name', projectController.deleteProjectComponent.bind(projectController));
 router.post('/:id/datasheets', projectController.addProjectDatasheet.bind(projectController));
+router.post('/:id/improve-dataset', projectController.improveProjectDataset.bind(projectController));
 router.delete('/:id/datasheets/:datasheetId', projectController.deleteProjectDatasheet.bind(projectController));
 router.delete('/:id', projectController.deleteProject.bind(projectController));
 

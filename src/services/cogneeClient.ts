@@ -73,7 +73,7 @@ export class CogneeClient {
         const datasetName = dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
         form.append('datasetName', datasetName);
 
-        logger.info(`[Cognee Cloud] Uploading to ${apiUrl}/api/v1/add (dataset: ${datasetName}, component: ${componentName})...`);
+        logger.info(`[Cognee API Call] POST ${apiUrl}/api/v1/add -> Starting upload (dataset: ${datasetName}, component: ${componentName})...`);
 
         const addRes = await fetch(`${apiUrl}/api/v1/add`, {
           method: 'POST',
@@ -83,10 +83,12 @@ export class CogneeClient {
 
         if (addRes.ok) {
           const addResult = await addRes.json();
-          logger.info(`[Cognee Cloud] Add succeeded: ${addResult.status || 'OK'}`);
+          const itemId = addResult.id || addResult.item_id || addResult.data_id || addResult.dataset_id || addResult.uuid || addResult.file_id || addResult.document_id || JSON.stringify(addResult);
+          logger.info(`[Cognee API Call] POST /api/v1/add -> Succeeded. Item Identifier Created: ${itemId}`, { addResult });
 
           // Trigger cognify to build knowledge graph
           try {
+            logger.info(`[Cognee API Call] POST ${apiUrl}/api/v1/cognify -> Starting cognify for dataset: ${datasetName}...`);
             const cognifyRes = await fetch(`${apiUrl}/api/v1/cognify`, {
               method: 'POST',
               headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
@@ -94,16 +96,18 @@ export class CogneeClient {
             });
             if (cognifyRes.ok) {
               const cognifyResult = await cognifyRes.json();
-              logger.info(`[Cognee Cloud] Cognify triggered: ${cognifyResult.status || 'OK'}`);
+              const nodesAdded = cognifyResult.nodes_added ?? cognifyResult.nodes ?? cognifyResult.node_count ?? cognifyResult.data?.nodes_added ?? cognifyResult.data?.nodes ?? cognifyResult.nodesCount ?? "N/A";
+              const edgesAdded = cognifyResult.edges_added ?? cognifyResult.edges ?? cognifyResult.edge_count ?? cognifyResult.data?.edges_added ?? cognifyResult.data?.edges ?? cognifyResult.edgesCount ?? "N/A";
+              logger.info(`[Cognee API Call] POST /api/v1/cognify -> Completed. Nodes added: ${nodesAdded}, Edges added: ${edgesAdded}`, { cognifyResult });
             } else {
-              logger.warn(`[Cognee Cloud] Cognify response ${cognifyRes.status}: ${await cognifyRes.text()}`);
+              logger.warn(`[Cognee API Call] POST /api/v1/cognify -> Failed (${cognifyRes.status}): ${await cognifyRes.text()}`);
             }
           } catch (cognifyErr: any) {
-            logger.warn('[Cognee Cloud] Cognify call failed (non-blocking):', cognifyErr.message || cognifyErr);
+            logger.warn('[Cognee API Call] POST /api/v1/cognify -> Call failed (non-blocking):', cognifyErr.message || cognifyErr);
           }
         } else {
           const errText = await addRes.text();
-          logger.warn(`[Cognee Cloud] Add failed (${addRes.status}): ${errText}`);
+          logger.warn(`[Cognee API Call] POST /api/v1/add -> Failed (${addRes.status}): ${errText}`);
         }
       } catch (err: any) {
         logger.warn('[Cognee Cloud] Upload failed (falling back to embedded store):', err.message || err);
@@ -180,6 +184,7 @@ export class CogneeClient {
     if (apiUrl && env.COGNEE_API_KEY && query) {
       try {
         const datasetName = dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
+        logger.info(`[Cognee API Call] POST ${apiUrl}/api/v1/search -> Searching dataset: ${datasetName}, query: "${query}"...`);
         const searchRes = await fetch(`${apiUrl}/api/v1/search`, {
           method: 'POST',
           headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
@@ -194,7 +199,7 @@ export class CogneeClient {
         if (searchRes.ok) {
           const results = await searchRes.json();
           if (Array.isArray(results) && results.length > 0) {
-            logger.info(`[Cognee Cloud] Search returned ${results.length} chunks for "${query}" (session: ${sessionId})`);
+            logger.info(`[Cognee API Call] POST /api/v1/search -> Returned ${results.length} chunks for query "${query}" (session: ${sessionId})`);
             return results;
           }
         }
@@ -252,7 +257,7 @@ export class CogneeClient {
     if (apiUrl && env.COGNEE_API_KEY) {
       try {
         const datasetName = params.dataset.replace(/[^a-zA-Z0-9_-]/g, '_');
-        logger.info(`[Cognee Cloud] Improving dataset: ${datasetName}...`);
+        logger.info(`[Cognee API Call] POST ${apiUrl}/api/v1/improve -> Starting improve for dataset: ${datasetName}...`);
         const improveRes = await fetch(`${apiUrl}/api/v1/improve`, {
           method: 'POST',
           headers: { ...this.getHeaders(), 'Content-Type': 'application/json' },
@@ -264,10 +269,12 @@ export class CogneeClient {
 
         if (improveRes.ok) {
           const improveResult = await improveRes.json();
-          logger.info(`[Cognee Cloud] Improve succeeded for ${datasetName}:`, improveResult);
+          const nodesAdded = improveResult.nodes_added ?? improveResult.nodes ?? improveResult.node_count ?? improveResult.data?.nodes_added ?? improveResult.data?.nodes ?? improveResult.nodesCount ?? "N/A";
+          const edgesAdded = improveResult.edges_added ?? improveResult.edges ?? improveResult.edge_count ?? improveResult.data?.edges_added ?? improveResult.data?.edges ?? improveResult.edgesCount ?? "N/A";
+          logger.info(`[Cognee API Call] POST /api/v1/improve -> Completed for ${datasetName}. Nodes added: ${nodesAdded}, Edges added: ${edgesAdded}`, { improveResult });
           return improveResult;
         } else {
-          logger.warn(`[Cognee Cloud] Improve failed (${improveRes.status}): ${await improveRes.text()}`);
+          logger.warn(`[Cognee API Call] POST /api/v1/improve -> Failed (${improveRes.status}): ${await improveRes.text()}`);
         }
       } catch (err: any) {
         logger.warn(`[Cognee Cloud] Improve call failed:`, err.message || err);

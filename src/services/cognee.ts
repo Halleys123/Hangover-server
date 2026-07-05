@@ -676,7 +676,7 @@ ${rawText.substring(0, 60000)}`;
  * Link an already parsed datasheet to a project dataset by copying its metadata/text and specs
  * into the project's dataset name, then running the improve call on Cognee Cloud.
  */
-export async function addDatasheetToProjectDataset(datasheet: any, projectId: string): Promise<void> {
+export async function addDatasheetToProjectDataset(datasheet: any, projectId: string, triggerImprove = false): Promise<void> {
   const project = await Project.findById(projectId);
   const datasetName = project ? sanitizeDatasetName(project.name) : projectId;
   const cleanName = datasheet.name.replace(/\.pdf$/i, '').trim() || 'Unknown Component';
@@ -711,11 +711,13 @@ export async function addDatasheetToProjectDataset(datasheet: any, projectId: st
     });
   }
 
-  // 3. Trigger improve
-  try {
-    await cognee.improve({ dataset: datasetName });
-  } catch (err: any) {
-    logger.warn('[Cognee] Improve failed for project mapping:', err.message || err);
+  // 3. Trigger improve only if explicitly requested
+  if (triggerImprove) {
+    try {
+      await cognee.improve({ dataset: datasetName });
+    } catch (err: any) {
+      logger.warn('[Cognee] Improve failed for project mapping:', err.message || err);
+    }
   }
 }
 

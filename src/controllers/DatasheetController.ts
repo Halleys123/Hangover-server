@@ -142,7 +142,6 @@ export class DatasheetController {
     }
 
     try {
-      const { projectId } = req.body;
       const createdSheets = [];
       for (const file of files) {
         const sheet = await Datasheet.create({
@@ -155,14 +154,7 @@ export class DatasheetController {
           cogneeConfig: null,
         });
 
-        if (projectId) {
-          await Project.findOneAndUpdate(
-            { _id: projectId, userId: req.user!._id },
-            { $addToSet: { datasheets: sheet._id } }
-          );
-        }
-
-        // Enqueue into background queue
+        // Enqueue into background queue for general library ingestion (Cognee add API)
         pdfQueue.enqueue(sheet._id.toString(), sheet.filePath, sheet.name);
         createdSheets.push(sheet);
       }

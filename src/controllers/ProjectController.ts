@@ -4,6 +4,7 @@ import { Project } from '../models/Project.js';
 import { Datasheet } from '../models/Datasheet.js';
 import { Component } from '../models/Component.js';
 import { addDatasheetToProjectDataset, normalizeExtractedSpecs } from '../services/cognee.js';
+import { cognee } from '../services/cogneeClient.js';
 import { derivePins } from '../utils/derivePins.js';
 import { logger } from '../utils/logger.js';
 
@@ -260,7 +261,7 @@ export class ProjectController {
       }
 
       try {
-        await addDatasheetToProjectDataset(datasheet, req.params.id);
+        await addDatasheetToProjectDataset(datasheet, req.params.id, false);
         
         const cleanName = datasheet.name.replace(/\.pdf$/i, '').replace(/_Datasheet|_Spec|_Specifications/i, '').trim() || 'Datasheet';
         const greetingText = `New datasheet **${datasheet.name}** attached to workspace. I have created a dedicated, isolated chat context for **${cleanName}** so there is no confusion with previous datasheets. How would you like to integrate it into your circuit design?`;
@@ -331,6 +332,22 @@ export class ProjectController {
         return;
       }
       res.status(204).send();
+    } catch (err) {
+      next(err);
+    }
+  }
+
+  public async improveProjectDataset(req: Request, res: Response, next: NextFunction): Promise<void> {
+    try {
+      const project = await Project.findOne({ _id: req.params.id, userId: req.user!._id });
+      if (!project) {
+        res.status(404).json({ error: 'Project not found' });
+        return;
+      }
+      const datasetName = project.name.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+      logger.info(`[Projects] User confirmed all datasheets attached. Triggering Cognee improve for dataset "${datasetName}"...`);
+      const result = await cognee.improve({ dataset: datasetName });
+      res.json({ success: true, result });
     } catch (err) {
       next(err);
     }

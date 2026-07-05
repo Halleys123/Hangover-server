@@ -3,6 +3,7 @@ import OpenAI from 'openai';
 import { derivePins } from '../utils/derivePins.js';
 import { validateAndGetAIConfig } from './aiConfig.js';
 import { logger } from '../utils/logger.js';
+import { logAIContextToFile } from '../utils/aiLogger.js';
 
 /**
  * Strips optional markdown code fences (```json ... ``` or ``` ... ```) and
@@ -68,8 +69,12 @@ export class OpenAIService {
 
     const model = this.getModel();
     const startTime = Date.now();
-    console.log(`\n[LLM Chat Request] Starting... Model: "${model}"`);
-    console.log(`[LLM Chat Request] Query: "${query.substring(0, 100)}${query.length > 100 ? '...' : ''}"`);
+    logAIContextToFile({
+      type: 'Chat Response',
+      model,
+      query,
+      cogneeContext: graphContext,
+    });
 
     try {
       const response = await openai.chat.completions.create({
@@ -112,8 +117,12 @@ export class OpenAIService {
 
     const model = this.getModel();
     const startTime = Date.now();
-    console.log(`\n[LLM JSON Request] Starting... Model: "${model}"`);
-    console.log(`[LLM JSON Request] Prompt details: "${userPrompt.substring(0, 150)}..."`);
+    logAIContextToFile({
+      type: 'JSON Extraction',
+      model,
+      systemPrompt,
+      userPrompt,
+    });
 
     try {
       const response = await openai.chat.completions.create({
@@ -129,8 +138,6 @@ export class OpenAIService {
 
       const duration = Date.now() - startTime;
       console.log(`[LLM JSON Response] Completed in ${duration}ms\n`);
-      // Log the generated response 
-      console.log(`[LLM JSON Response] The JSON Response Generated is: ${response}\n`);
       return response.choices[0]?.message?.content || '{}';
     } catch (err: any) {
       const duration = Date.now() - startTime;
@@ -266,8 +273,6 @@ export class OpenAIService {
 
     const model = this.getModel();
     const startTime = Date.now();
-    console.log(`\n[LLM Circuit Request] Starting... Model: "${model}"`);
-    console.log(`[LLM Circuit Request] Query: "${query}"`);
 
     try {
       const hasComponents = cogneeComponents.length > 0;
@@ -285,6 +290,17 @@ export class OpenAIService {
       // Build existing canvas context so AI knows current node positions
       const existingNodes: any[] = existingCanvas?.nodes || [];
       const existingEdges: any[] = existingCanvas?.edges || [];
+      const isCanvasSent = existingNodes.length > 0 || existingEdges.length > 0;
+      logAIContextToFile({
+        type: 'Circuit & Chat Generation',
+        model,
+        query,
+        isCanvasContextSent: isCanvasSent,
+        canvasContext: existingCanvas || { nodes: [], edges: [] },
+        cogneeContext: cogneeComponents,
+        projectMetadata: projectContext,
+      });
+
       const existingCanvasInfo = existingNodes.length > 0
         ? `\nEXISTING CANVAS NODES (use these EXACT positions for these components — do not change them):\n${existingNodes.map((n: any) => `  - label: "${n?.data?.label}" | id: "${n?.id}" | position: {x:${n?.position?.x}, y:${n?.position?.y}}`).join('\n')}\nEXISTING EDGES (already wired — do not duplicate them):\n${existingEdges.map((e: any) => `  - id: "${e?.id}" source: ${e?.source}/${e?.sourceHandle} → target: ${e?.target}/${e?.targetHandle}`).join('\n') || '  (none yet)'}`
         : '';
