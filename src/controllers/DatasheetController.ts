@@ -5,7 +5,8 @@ import { Datasheet } from '../models/Datasheet.js';
 import { Component } from '../models/Component.js';
 import { Project } from '../models/Project.js';
 import { pdfQueue } from '../services/pdfQueue.js';
-import { refineDatasheetSpecs, normalizeExtractedSpecs } from '../services/cognee.js';
+import { refineDatasheetSpecs, normalizeExtractedSpecs, addDatasheetToProjectDataset } from '../services/cognee.js';
+import { Types } from 'mongoose';
 import { derivePins } from '../utils/derivePins.js';
 import { logger } from '../utils/logger.js';
 
@@ -157,6 +158,38 @@ export class DatasheetController {
         // Enqueue into background queue for general library ingestion (Cognee add API)
         pdfQueue.enqueue(sheet._id.toString(), sheet.filePath, sheet.name);
         createdSheets.push(sheet);
+      }
+
+      const projectId = req.body.projectId || req.query.projectId;
+      if (projectId) {
+        try {
+          const project = await Project.findOne({ _id: projectId, userId: req.user!._id });
+          if (project) {
+            for (const sheet of createdSheets) {
+              if (!project.datasheets.some((id: any) => id.toString() === sheet._id.toString())) {
+                project.datasheets.push(sheet._id as any);
+                try {
+                  await addDatasheetToProjectDataset(sheet, projectId.toString(), false);
+                  const cleanName = sheet.name.replace(/\.pdf$/i, '').replace(/_Datasheet|_Spec|_Specifications/i, '').trim() || 'Datasheet';
+                  const greetingText = `New datasheet **${sheet.name}** uploaded and attached to workspace. I have created a dedicated, isolated chat context for **${cleanName}** so there is no confusion with previous datasheets. How would you like to integrate it into your circuit design?`;
+                  const newSessionId = new Types.ObjectId();
+                  const newSession = {
+                    _id: newSessionId,
+                    title: `${cleanName} Context`,
+                    chats: [{ role: 'assistant', text: greetingText, timestamp: new Date() }]
+                  };
+                  if (!project.chatHistory) project.chatHistory = [];
+                  project.chatHistory.push(newSession as any);
+                } catch (cogErr: any) {
+                  logger.error('[DatasheetController] Failed to sync uploaded datasheet to project dataset:', cogErr.message || cogErr);
+                }
+              }
+            }
+            await project.save();
+          }
+        } catch (projErr) {
+          logger.error('[DatasheetController] Failed to attach uploaded datasheet to project:', projErr);
+        }
       }
 
       if (createdSheets.length === 1 && !req.body.multi) {

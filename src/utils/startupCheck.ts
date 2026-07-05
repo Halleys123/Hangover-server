@@ -1,5 +1,6 @@
 import { Component } from '../models/Component.js';
 import { Datasheet } from '../models/Datasheet.js';
+import { Project } from '../models/Project.js';
 import { componentController } from '../controllers/ComponentController.js';
 import { datasheetController } from '../controllers/DatasheetController.js';
 import { logger } from './logger.js';
@@ -21,7 +22,20 @@ export async function runStartupHealing(): Promise<void> {
       if (updated) healedDatasheetsCount++;
     }
 
-    logger.info(`[Startup] Finished schema healing. Components healed: ${healedComponentsCount}, Datasheets healed: ${healedDatasheetsCount}`);
+    const projects = await Project.find({});
+    let healedProjectsCount = 0;
+    for (const proj of projects) {
+      if (!proj.datasheets || proj.datasheets.length === 0) {
+        const userSheets = await Datasheet.find({ userId: proj.userId });
+        if (userSheets.length > 0) {
+          proj.datasheets = userSheets.map(s => s._id as any);
+          await proj.save();
+          healedProjectsCount++;
+        }
+      }
+    }
+
+    logger.info(`[Startup] Finished schema healing. Components: ${healedComponentsCount}, Datasheets: ${healedDatasheetsCount}, Projects: ${healedProjectsCount}`);
   } catch (err: any) {
     logger.error('[Startup] Schema healing encountered an error:', err.message || err);
   }

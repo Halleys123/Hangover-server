@@ -442,6 +442,7 @@ export class AIController {
       await latestProject.save();
 
       // Step C: Auto-Persist generated circuit and merge visual nodes
+      console.log(`[AIController] agenticResult.type="${agenticResult.type}", nodes=${agenticResult.nodes?.length || 0}, edges=${agenticResult.edges?.length || 0}`);
       if (agenticResult.type === 'circuit_generated' && agenticResult.nodes && agenticResult.edges) {
         const latestProjectForCanvas = await Project.findOne({ _id: projectId, userId: req.user!._id });
         if (latestProjectForCanvas) {
@@ -450,34 +451,64 @@ export class AIController {
 
           const existingPosMap = new Map<string, { x: number; y: number }>();
           existingNodes.forEach((n: any) => {
-            if (n?.data?.label) existingPosMap.set(n.data.label, n.position);
+            if (n?.data?.label) existingPosMap.set(n.data.label.toLowerCase(), n.position);
             if (n?.id) existingPosMap.set(n.id, n.position);
           });
 
           const mergedNodes = (agenticResult.nodes as any[]).map((newNode: any) => {
             const existingPos =
-              existingPosMap.get(newNode?.data?.label) ||
+              existingPosMap.get(newNode?.data?.label?.toLowerCase()) ||
               existingPosMap.get(newNode?.id);
             return existingPos ? { ...newNode, position: existingPos } : newNode;
           });
 
-          const existingEdgeIds = new Set(existingEdges.map((e: any) => e.id));
-          const newEdges = (agenticResult.edges as any[]).filter(
-            (e: any) => e?.id && !existingEdgeIds.has(e.id)
+          // Preserve any existing node on the canvas that is not in agenticResult.nodes
+          const newNodeIds = new Set(mergedNodes.map((n: any) => n.id));
+          const newNodeLabels = new Set(mergedNodes.map((n: any) => n?.data?.label?.toLowerCase()));
+          const preservedExistingNodes = existingNodes.filter(
+            (en: any) => !newNodeIds.has(en.id) && (!en?.data?.label || !newNodeLabels.has(en.data.label.toLowerCase()))
           );
-          const mergedEdges = [...existingEdges, ...newEdges];
+          const finalNodes = [...preservedExistingNodes, ...mergedNodes];
+
+          const validNodeIds = new Set(finalNodes.map((n: any) => n.id));
+
+          // Find all pairs of node IDs connected by the newly generated AI edges
+          const aiConnectedPairs = new Set<string>();
+          (agenticResult.edges as any[]).forEach((e: any) => {
+            if (e.source && e.target) {
+              aiConnectedPairs.add(`${e.source}:::${e.target}`);
+              aiConnectedPairs.add(`${e.target}:::${e.source}`);
+            }
+          });
+
+          const newEdgeIds = new Set((agenticResult.edges as any[]).map((e: any) => e.id));
+
+          // Preserve existing edges ONLY IF:
+          // 1. Both source and target nodes still exist in finalNodes (remove dead orphan edges)
+          // 2. The edge ID does not collide with a newly generated edge ID
+          // 3. The source and target nodes are NOT being re-wired by the new AI edges
+          const preservedExistingEdges = existingEdges.filter((e: any) => {
+            if (!validNodeIds.has(e.source) || !validNodeIds.has(e.target)) return false;
+            if (newEdgeIds.has(e.id)) return false;
+            if (aiConnectedPairs.has(`${e.source}:::${e.target}`)) return false;
+            return true;
+          });
+
+          const finalEdges = [...preservedExistingEdges, ...(agenticResult.edges as any[])];
+          console.log(`[AIController] Canvas merge: preservedEdges=${preservedExistingEdges.length}, newEdges=${agenticResult.edges?.length || 0}, finalEdges=${finalEdges.length}`);
 
           latestProjectForCanvas.canvas = {
-            nodes: mergedNodes as any,
-            edges: mergedEdges as any,
+            nodes: finalNodes as any,
+            edges: finalEdges as any,
           };
           await latestProjectForCanvas.save();
 
-          (agenticResult as any).nodes = mergedNodes;
-          (agenticResult as any).edges = mergedEdges;
+          (agenticResult as any).nodes = finalNodes;
+          (agenticResult as any).edges = finalEdges;
         }
       }
 
+      console.log(`[AIController] Final response: type=${agenticResult.type}, nodes=${agenticResult.nodes?.length || 0}, edges=${agenticResult.edges?.length || 0}`);
       res.json(agenticResult);
 
     } catch (err: any) {
