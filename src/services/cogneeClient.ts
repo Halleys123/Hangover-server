@@ -96,9 +96,12 @@ export class CogneeClient {
             });
             if (cognifyRes.ok) {
               const cognifyResult = await cognifyRes.json();
-              const nodesAdded = cognifyResult.nodes_added ?? cognifyResult.nodes ?? cognifyResult.node_count ?? cognifyResult.data?.nodes_added ?? cognifyResult.data?.nodes ?? cognifyResult.nodesCount ?? "N/A";
-              const edgesAdded = cognifyResult.edges_added ?? cognifyResult.edges ?? cognifyResult.edge_count ?? cognifyResult.data?.edges_added ?? cognifyResult.data?.edges ?? cognifyResult.edgesCount ?? "N/A";
-              logger.info(`[Cognee API Call] POST /api/v1/cognify -> Completed. Nodes added: ${nodesAdded}, Edges added: ${edgesAdded}`, { cognifyResult });
+              const firstKey = Object.keys(cognifyResult)[0];
+              const datasetResult = firstKey ? cognifyResult[firstKey] : null;
+              const status = datasetResult?.status ?? cognifyResult.status ?? 'Completed';
+              const nodesAdded = cognifyResult.nodes_added ?? datasetResult?.nodes_added ?? 'N/A';
+              const edgesAdded = cognifyResult.edges_added ?? datasetResult?.edges_added ?? 'N/A';
+              logger.info(`[Cognee API Call] POST /api/v1/cognify -> Completed. Status: ${status}, Nodes added: ${nodesAdded}, Edges added: ${edgesAdded}`, { cognifyResult });
             } else {
               logger.warn(`[Cognee API Call] POST /api/v1/cognify -> Failed (${cognifyRes.status}): ${await cognifyRes.text()}`);
             }
@@ -269,9 +272,12 @@ export class CogneeClient {
 
         if (improveRes.ok) {
           const improveResult = await improveRes.json();
-          const nodesAdded = improveResult.nodes_added ?? improveResult.nodes ?? improveResult.node_count ?? improveResult.data?.nodes_added ?? improveResult.data?.nodes ?? improveResult.nodesCount ?? "N/A";
-          const edgesAdded = improveResult.edges_added ?? improveResult.edges ?? improveResult.edge_count ?? improveResult.data?.edges_added ?? improveResult.data?.edges ?? improveResult.edgesCount ?? "N/A";
-          logger.info(`[Cognee API Call] POST /api/v1/improve -> Completed for ${datasetName}. Nodes added: ${nodesAdded}, Edges added: ${edgesAdded}`, { improveResult });
+          const firstKey = Object.keys(improveResult)[0];
+          const datasetResult = firstKey ? improveResult[firstKey] : null;
+          const status = datasetResult?.status ?? improveResult.status ?? 'Completed';
+          const nodesAdded = improveResult.nodes_added ?? datasetResult?.nodes_added ?? 'N/A';
+          const edgesAdded = improveResult.edges_added ?? datasetResult?.edges_added ?? 'N/A';
+          logger.info(`[Cognee API Call] POST /api/v1/improve -> Completed for ${datasetName}. Status: ${status}, Nodes added: ${nodesAdded}, Edges added: ${edgesAdded}`, { improveResult });
           return improveResult;
         } else {
           logger.warn(`[Cognee API Call] POST /api/v1/improve -> Failed (${improveRes.status}): ${await improveRes.text()}`);
