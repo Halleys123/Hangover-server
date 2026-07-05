@@ -352,7 +352,7 @@ Remember: respond ONLY with a JSON object. No text before or after the JSON.`;
           }
         ],
         temperature: 0.2
-      });
+      }, { timeout: 15000 });
 
       const duration = Date.now() - startTime;
       console.log(`[LLM Circuit Response] Completed in ${duration}ms\n`);
@@ -362,6 +362,17 @@ Remember: respond ONLY with a JSON object. No text before or after the JSON.`;
       // Semantic Normalization: Ensure AI-generated React Flow nodes strictly use 'hardware' node type
       // and physical pin layouts derived from the actual matched component specs.
       // Matching is done by: exact name -> name inclusion -> description/category keyword fallback.
+      // Map existing node labels to their stable canvas IDs
+      const labelToExistingIdMap = new Map<string, string>();
+      existingNodes.forEach((n: any) => {
+        if (n?.data?.label) {
+          labelToExistingIdMap.set(n.data.label.toLowerCase(), n.id);
+        }
+      });
+
+      // Map AI-generated node IDs/labels to final stable IDs
+      const aiIdToFinalIdMap = new Map<string, string>();
+
       const normalizedNodes = Array.isArray(parsed.nodes) ? parsed.nodes.map((node: any, idx: number) => {
         const aiLabel = (typeof node?.data?.label === 'string' && node.data.label) ? node.data.label : `Node ${idx + 1}`;
         const aiLabelLower = aiLabel.toLowerCase();
@@ -390,9 +401,16 @@ Remember: respond ONLY with a JSON object. No text before or after the JSON.`;
         const specs = matchedComp ? (matchedComp.specs || matchedComp.cogneeConfig) : null;
         const derived = derivePins(compName, specs);
 
+        const matchedId = labelToExistingIdMap.get(compName.toLowerCase()) || labelToExistingIdMap.get(aiLabelLower);
+        const finalNodeId = matchedId || node?.id || `node-${idx + 1}`;
+
+        if (node?.id) {
+          aiIdToFinalIdMap.set(node.id, finalNodeId);
+        }
+
         return {
           ...node,
-          id: node?.id || `node-${idx + 1}`,
+          id: finalNodeId,
           type: 'hardware',
           data: {
             ...node?.data,
@@ -404,11 +422,23 @@ Remember: respond ONLY with a JSON object. No text before or after the JSON.`;
         };
       }) : [];
 
+      const normalizedEdges = Array.isArray(parsed.edges) ? parsed.edges.map((edge: any) => {
+        const sourceId = aiIdToFinalIdMap.get(edge.source) || edge.source;
+        const targetId = aiIdToFinalIdMap.get(edge.target) || edge.target;
+        return {
+          ...edge,
+          source: sourceId,
+          target: targetId,
+          sourceHandle: typeof edge.sourceHandle === 'string' ? edge.sourceHandle.toLowerCase() : edge.sourceHandle,
+          targetHandle: typeof edge.targetHandle === 'string' ? edge.targetHandle.toLowerCase() : edge.targetHandle,
+        };
+      }) : [];
+
       return {
         type: parsed.type === 'circuit_generated' ? 'circuit_generated' : 'chat_response',
         message: parsed.message || 'Processed project requirements.',
         nodes: normalizedNodes,
-        edges: parsed.edges || []
+        edges: normalizedEdges
       };
     } catch (err: any) {
       const duration = Date.now() - startTime;

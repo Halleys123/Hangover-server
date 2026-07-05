@@ -41,9 +41,9 @@ export function normalizeExtractedSpecs(name: string, specs: any): any {
     if (!specs["Electrical Limits"] || typeof specs["Electrical Limits"] !== 'object') {
       specs["Electrical Limits"] = {};
     }
-    specs["Electrical Limits"].minOperatingVoltage = specs["Electrical Limits"].minOperatingVoltage || 5.0;
-    specs["Electrical Limits"].maxOperatingVoltage = specs["Electrical Limits"].maxOperatingVoltage || 12.0;
-    specs["Electrical Limits"].nominalVoltage = specs["Electrical Limits"].nominalVoltage || 5.0;
+    specs["Electrical Limits"].minOperatingVoltage = 5.0;
+    specs["Electrical Limits"].maxOperatingVoltage = 12.0;
+    specs["Electrical Limits"].nominalVoltage = 5.0;
     specs["Electrical Limits"].maxCurrentmA = specs["Electrical Limits"].maxCurrentmA || 500;
     specs["Electrical Limits"].maxPowerDissipationW = specs["Electrical Limits"].maxPowerDissipationW || 2.5;
 
@@ -86,9 +86,9 @@ export function normalizeExtractedSpecs(name: string, specs: any): any {
     if (!specs["Electrical Limits"] || typeof specs["Electrical Limits"] !== 'object') {
       specs["Electrical Limits"] = {};
     }
-    specs["Electrical Limits"].minOperatingVoltage = specs["Electrical Limits"].minOperatingVoltage || 3.0;
-    specs["Electrical Limits"].maxOperatingVoltage = specs["Electrical Limits"].maxOperatingVoltage || 3.6;
-    specs["Electrical Limits"].nominalVoltage = specs["Electrical Limits"].nominalVoltage || 3.3;
+    specs["Electrical Limits"].minOperatingVoltage = 3.0;
+    specs["Electrical Limits"].maxOperatingVoltage = 3.6;
+    specs["Electrical Limits"].nominalVoltage = 3.3;
     specs["Electrical Limits"].maxCurrentmA = specs["Electrical Limits"].maxCurrentmA || 500;
     specs["Electrical Limits"].maxPowerDissipationW = specs["Electrical Limits"].maxPowerDissipationW || 1.0;
 
