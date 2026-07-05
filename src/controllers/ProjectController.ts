@@ -105,6 +105,20 @@ export class ProjectController {
         return;
       }
 
+      if (!project.datasheets || project.datasheets.length === 0) {
+        const userSheets = await Datasheet.find({ userId: req.user!._id });
+        if (userSheets.length > 0) {
+          project.datasheets = userSheets.map(s => s._id as any);
+          await project.save();
+          const repopulated = await Project.findOne({ _id: req.params.id, userId: req.user!._id }).populate('datasheets');
+          if (repopulated) {
+            this.healCanvasInPlace(repopulated);
+            res.json(repopulated);
+            return;
+          }
+        }
+      }
+
       // Dynamic healing in-memory before returning the response
       this.healCanvasInPlace(project);
 

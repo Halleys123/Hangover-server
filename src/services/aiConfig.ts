@@ -66,9 +66,9 @@ export function validateAndGetAIConfig(logErrors = true): AIClientConfig {
     case 'ollama': {
       apiKey = env.OLLAMA_API_KEY || 'dummy-key-for-local-ollama';
       baseURL = env.OLLAMA_BASE_URL || 'http://localhost:11434/v1';
-      model = env.OLLAMA_MODEL || 'llama3';
-      if (!env.OLLAMA_MODEL && !env.LLM_MODEL) {
-        missingVars.push('OLLAMA_MODEL (or LLM_MODEL, e.g. llama3:8b)');
+      model = env.OLLAMA_MODEL || 'llama3.1:latest';
+      if (model === 'llama3' || model === 'llama3:8b') {
+        model = 'llama3.1:latest';
       }
       break;
     }
